@@ -1,0 +1,1189 @@
+//! Macroquad frame viewer (milestone 2): draws a frame's layers, backdrops and the
+//! placed objects at their starting positions. No game logic runs yet.
+
+pub mod audio_out;
+pub mod scene;
+pub mod text;
+
+use crate::ctf_loader::properties::{Fill, ShapeKind};
+use crate::ctf_loader::GameData;
+use crate::runtime::{Input, Runtime};
+use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
+use macroquad::prelude::*;
+use scene::{SceneItem, Visual};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Layer flag: layer is visible.
+const LAYER_VISIBLE: u32 = 0x10;
+const LAYER_X_COEF: u32 = 0x01;
+const LAYER_Y_COEF: u32 = 0x02;
+
+#[derive(Debug, Clone, Default)]
+pub struct ViewerOptions {
+    pub start_frame: usize,
+    /// Render one image to this PNG path and exit.
+    pub screenshot: Option<PathBuf>,
+    /// Start zoomed out to show the whole frame.
+    pub fit: bool,
+    /// Draw objects even if they start hidden.
+    pub show_hidden: bool,
+    /// Layer indices to hide in the first frame shown (debug aid for covering overlays).
+    pub hidden_layers: Vec<usize>,
+    /// Run the event sheets (milestone 3). Off = static start-of-frame view.
+    pub run_events: bool,
+    /// With `screenshot`: game ticks to simulate before capturing.
+    pub screenshot_ticks: u32,
+    /// Disable sound output.
+    pub mute: bool,
+    /// Where game save files go (None = default per-game folder).
+    pub save_dir: Option<std::path::PathBuf>,
+}
+
+/// Window configuration derived from the application header. Very large games are
+/// scaled down so the window fits on a typical desktop.
+pub fn window_conf(g: &GameData) -> Conf {
+    let (w, h) = app_size(g);
+    let scale = (1600.0 / w).min(900.0 / h).min(1.0);
+    Conf {
+        window_title: if g.name.is_empty() {
+            "fusion-rt".into()
+        } else {
+            format!("{} - fusion-rt", g.name)
+        },
+        window_width: (w * scale) as i32,
+        window_height: (h * scale) as i32,
+        window_resizable: true,
+        high_dpi: false,
+        ..Default::default()
+    }
+}
+
+fn app_size(g: &GameData) -> (f32, f32) {
+    let w = if g.header.window_width > 0 {
+        g.header.window_width
+    } else {
+        640
+    };
+    let h = if g.header.window_height > 0 {
+        g.header.window_height
+    } else {
+        480
+    };
+    (w as f32, h as f32)
+}
+
+fn rgba(c: [u8; 4]) -> Color {
+    Color::from_rgba(c[0], c[1], c[2], c[3])
+}
+
+fn opaque(c: [u8; 4]) -> Color {
+    Color::from_rgba(c[0], c[1], c[2], 255)
+}
+
+const SPRITE_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying lowp vec2 uv;
+varying lowp vec4 color;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    color = color0 / 255.0;
+    uv = texcoord;
+}"#;
+
+const SPRITE_FS: &str = r#"#version 100
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    gl_FragColor = color * texture2D(Texture, uv);
+}"#;
+
+/// Whether render-target textures come out upside down when drawn back with this camera setup.
+const OFFSCREEN_FLIP_Y: bool = true;
+
+const EFFECT_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying mediump vec2 uv;
+varying lowp vec4 color;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    color = color0 / 255.0;
+    uv = texcoord;
+}"#;
+
+/// Perspective-object distortions. `src` is the source rectangle in texture coordinates,
+/// `params` = (effect, vertical, zoom, waves).
+const EFFECT_FS: &str = r#"#version 100
+precision mediump float;
+varying mediump vec2 uv;
+varying lowp vec4 color;
+uniform sampler2D Texture;
+uniform vec4 src;
+uniform vec4 params;
+void main() {
+    vec2 size = src.zw - src.xy;
+    vec2 p = (uv - src.xy) / size;
+    bool vertical = params.y > 0.5;
+    if (vertical) { p = p.yx; }
+    float k = params.z / 1000.0;
+    vec2 q = p;
+    if (params.x < 0.5) {
+        // Panorama: magnify towards the edges like a cylinder.
+        float f = (p.x - 0.5) * 2.0;
+        q.y = 0.5 + (p.y - 0.5) / (1.0 + k * f * f);
+    } else if (params.x < 1.5) {
+        // Perspective: magnification grows across the width.
+        q.y = 0.5 + (p.y - 0.5) / (1.0 + k * p.x);
+    } else if (params.x < 2.5) {
+        // Sine wave.
+        q.y = p.y + sin(p.x * params.w * 6.2831853) * k * 0.05;
+    } else {
+        // Sine offset.
+        q.x = p.x + sin(p.y * params.w * 6.2831853) * k * 0.05;
+    }
+    if (vertical) { q = q.yx; }
+    q = clamp(q, 0.0, 1.0);
+    gl_FragColor = vec4(texture2D(Texture, src.xy + q * size).rgb, 1.0);
+}"#;
+
+/// Copies a texture as fully opaque, without blending (render-target alpha is meaningless).
+const BLIT_FS: &str = r#"#version 100
+precision mediump float;
+varying mediump vec2 uv;
+varying lowp vec4 color;
+uniform sampler2D Texture;
+void main() {
+    gl_FragColor = vec4(texture2D(Texture, uv).rgb, 1.0);
+}"#;
+
+/// Off-screen targets used when a frame contains distortion effects.
+struct Offscreen {
+    size: (u32, u32),
+    main: RenderTarget,
+    snapshot: RenderTarget,
+    material: Option<Material>,
+    blit: Option<Material>,
+}
+
+impl Offscreen {
+    fn new(w: u32, h: u32) -> Self {
+        let make = || {
+            let rt = render_target(w, h);
+            rt.texture.set_filter(FilterMode::Nearest);
+            rt
+        };
+        let material = load_material(
+            ShaderSource::Glsl {
+                vertex: EFFECT_VS,
+                fragment: EFFECT_FS,
+            },
+            MaterialParams {
+                uniforms: vec![
+                    UniformDesc::new("src", UniformType::Float4),
+                    UniformDesc::new("params", UniformType::Float4),
+                ],
+                ..Default::default()
+            },
+        )
+        .map_err(|e| eprintln!("effect shader unavailable: {e:?}"))
+        .ok();
+        let blit = load_material(
+            ShaderSource::Glsl {
+                vertex: EFFECT_VS,
+                fragment: BLIT_FS,
+            },
+            MaterialParams::default(),
+        )
+        .map_err(|e| eprintln!("blit shader unavailable: {e:?}"))
+        .ok();
+        Self {
+            size: (w, h),
+            main: make(),
+            snapshot: make(),
+            material,
+            blit,
+        }
+    }
+
+    /// Draw a render target's texture opaquely.
+    fn blit(&self, from: &RenderTarget, x: f32, y: f32, size: Vec2) {
+        if let Some(m) = &self.blit {
+            gl_use_material(m);
+        }
+        let params = DrawTextureParams {
+            dest_size: Some(size),
+            flip_y: OFFSCREEN_FLIP_Y,
+            ..Default::default()
+        };
+        draw_texture_ex(&from.texture, x, y, WHITE, params);
+        gl_use_default_material();
+    }
+
+    fn camera(&self, target: &RenderTarget) -> Camera2D {
+        let (w, h) = (self.size.0 as f32, self.size.1 as f32);
+        let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, w, h));
+        cam.render_target = Some(target.clone());
+        cam
+    }
+}
+
+/// Ink effect ids that need a non-default blend mode.
+const INK_ADD: u16 = 9;
+const INK_SUBTRACT: u16 = 11;
+
+/// Fragment shaders for ink effects. `color` carries the object's tint and opacity.
+const INK_PREMUL_FS: &str = r#"#version 100
+precision mediump float;
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    vec4 t = color * texture2D(Texture, uv);
+    gl_FragColor = vec4(t.rgb * t.a, t.a);
+}"#;
+
+const INK_AND_FS: &str = r#"#version 100
+precision mediump float;
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    vec4 t = color * texture2D(Texture, uv);
+    gl_FragColor = vec4(mix(vec3(1.0), t.rgb, t.a), 1.0);
+}"#;
+
+const INK_INVERT_FS: &str = r#"#version 100
+precision mediump float;
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    vec4 t = texture2D(Texture, uv);
+    gl_FragColor = vec4(1.0 - t.rgb, t.a) * color;
+}"#;
+
+/// Ink effect ids.
+const INK_INVERT: u16 = 2;
+const INK_XOR: u16 = 3;
+const INK_AND: u16 = 4;
+const INK_OR: u16 = 5;
+
+/// Blend-mode materials for Fusion ink effects. The bitwise effects (AND / OR / XOR)
+/// are approximated with multiply / screen / difference-style blending.
+struct InkMaterials {
+    add: Option<Material>,
+    subtract: Option<Material>,
+    invert: Option<Material>,
+    and: Option<Material>,
+    or: Option<Material>,
+    xor: Option<Material>,
+}
+
+impl InkMaterials {
+    fn new() -> Self {
+        use BlendFactor::{One, OneMinusValue, Value, Zero};
+        let make = |fs: &str, blend: BlendState| {
+            load_material(
+                ShaderSource::Glsl { vertex: SPRITE_VS, fragment: fs },
+                MaterialParams {
+                    pipeline_params: PipelineParams { color_blend: Some(blend), ..Default::default() },
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| eprintln!("ink material unavailable: {e:?}"))
+            .ok()
+        };
+        let alpha = BlendState::new(Equation::Add, Value(BlendValue::SourceAlpha), OneMinusValue(BlendValue::SourceAlpha));
+        Self {
+            add: make(SPRITE_FS, BlendState::new(Equation::Add, Value(BlendValue::SourceAlpha), One)),
+            subtract: make(SPRITE_FS, BlendState::new(Equation::ReverseSubtract, Value(BlendValue::SourceAlpha), One)),
+            invert: make(INK_INVERT_FS, alpha),
+            and: make(INK_AND_FS, BlendState::new(Equation::Add, Value(BlendValue::DestinationColor), Zero)),
+            or: make(INK_PREMUL_FS, BlendState::new(Equation::Add, One, OneMinusValue(BlendValue::SourceColor))),
+            xor: make(
+                INK_PREMUL_FS,
+                BlendState::new(Equation::Add, OneMinusValue(BlendValue::DestinationColor), OneMinusValue(BlendValue::SourceColor)),
+            ),
+        }
+    }
+
+    fn for_effect(&self, effect: u16) -> Option<&Material> {
+        match effect {
+            INK_ADD => self.add.as_ref(),
+            INK_SUBTRACT => self.subtract.as_ref(),
+            INK_INVERT => self.invert.as_ref(),
+            INK_AND => self.and.as_ref(),
+            INK_OR => self.or.as_ref(),
+            INK_XOR => self.xor.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+/// Lazily decoded GPU textures keyed by image handle. Kept across frame changes
+/// until they pass a memory budget.
+#[derive(Default)]
+struct Textures {
+    map: HashMap<u32, Option<Texture2D>>,
+    bytes: usize,
+}
+
+/// Decoded-texture budget before the cache is emptied on a frame change.
+const TEXTURE_BUDGET: usize = 768 << 20;
+
+impl Textures {
+    fn get(&mut self, g: &GameData, handle: u32) -> Option<Texture2D> {
+        if let Some(t) = self.map.get(&handle) {
+            return t.clone();
+        }
+        let tex = g.images.get(handle).and_then(|e| e.decode_rgba().ok()).and_then(|img| {
+            if img.width == 0 || img.height == 0 {
+                return None;
+            }
+            self.bytes += img.pixels.len();
+            let t = Texture2D::from_rgba8(img.width as u16, img.height as u16, &img.pixels);
+            t.set_filter(FilterMode::Nearest);
+            Some(t)
+        });
+        self.map.insert(handle, tex.clone());
+        tex
+    }
+
+    fn trim(&mut self) {
+        if self.bytes > TEXTURE_BUDGET {
+            self.map.clear();
+            self.bytes = 0;
+        }
+    }
+}
+
+/// World-to-screen mapping for one layer.
+#[derive(Clone, Copy)]
+struct Xform {
+    origin: Vec2,
+    scroll: Vec2,
+    scale: f32,
+}
+
+impl Xform {
+    fn pt(&self, x: f32, y: f32) -> Vec2 {
+        self.origin + (vec2(x, y) - self.scroll) * self.scale
+    }
+}
+
+struct Viewer {
+    rt: Runtime,
+    textures: Textures,
+    inks: InkMaterials,
+    fonts: text::Fonts,
+    audio: audio_out::AudioOut,
+    offscreen: Option<Offscreen>,
+    /// Number of frame entries (frame_log length) the textures/layer toggles were set up for.
+    shown_frame: usize,
+    scroll: Vec2,
+    fit: bool,
+    show_hidden: bool,
+    debug_boxes: bool,
+    hud: bool,
+    running: bool,
+    tick_acc: f64,
+    input: Input,
+    /// Per-layer visibility override for the current frame (debug toggles).
+    layer_off: Vec<bool>,
+    drag_from: Option<(Vec2, Vec2)>,
+}
+
+/// Windows virtual-key code for a Macroquad key (what Fusion events compare against).
+fn vk_code(k: KeyCode) -> Option<u16> {
+    use KeyCode::*;
+    let code = k as u16;
+    Some(match k {
+        A | B | C | D | E | F | G | H | I | J | K | L | M | N | O | P | Q | R | S | T | U | V
+        | W | X | Y | Z => 0x41 + (code - A as u16),
+        Key0 | Key1 | Key2 | Key3 | Key4 | Key5 | Key6 | Key7 | Key8 | Key9 => {
+            0x30 + (code - Key0 as u16)
+        }
+        Kp0 | Kp1 | Kp2 | Kp3 | Kp4 | Kp5 | Kp6 | Kp7 | Kp8 | Kp9 => 0x60 + (code - Kp0 as u16),
+        F1 | F2 | F3 | F4 | F5 | F6 | F7 | F8 | F9 | F10 | F11 | F12 => 0x70 + (code - F1 as u16),
+        Space => 0x20,
+        Enter | KpEnter => 0x0D,
+        Escape => 0x1B,
+        Backspace => 0x08,
+        Tab => 0x09,
+        LeftShift | RightShift => 0x10,
+        LeftControl | RightControl => 0x11,
+        LeftAlt | RightAlt => 0x12,
+        Left => 0x25,
+        Up => 0x26,
+        Right => 0x27,
+        Down => 0x28,
+        Insert => 0x2D,
+        Delete => 0x2E,
+        Home => 0x24,
+        End => 0x23,
+        PageUp => 0x21,
+        PageDown => 0x22,
+        _ => return None,
+    })
+}
+
+impl Viewer {
+    fn load_frame(&mut self, index: usize) {
+        let n = self.rt.game.frames.len();
+        if n == 0 {
+            return;
+        }
+        self.rt.load_frame(index % n);
+        self.on_frame_changed();
+    }
+
+    fn on_frame_changed(&mut self) {
+        self.shown_frame = self.rt.frame_log.len();
+        self.scroll = Vec2::ZERO;
+        self.layer_off = vec![false; self.rt.frame().layers.len().max(1)];
+        // Keep decoded images for revisits, unless the cache has grown too large.
+        self.textures.trim();
+    }
+
+    fn view_size(&self) -> Vec2 {
+        let (w, h) = app_size(&self.rt.game);
+        if self.fit {
+            let f = self.rt.frame();
+            vec2((f.width as f32).max(w), (f.height as f32).max(h))
+        } else {
+            vec2(w, h)
+        }
+    }
+
+    fn frame_size(&self) -> Vec2 {
+        let f = self.rt.frame();
+        vec2(f.width as f32, f.height as f32)
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max = (self.frame_size() - self.view_size()).max(Vec2::ZERO);
+        self.scroll = self.scroll.clamp(Vec2::ZERO, max);
+    }
+
+    /// Screen rectangle the game view occupies (letterboxed) and its scale.
+    fn viewport(&self) -> (Vec2, f32) {
+        let view = self.view_size();
+        let scale = (screen_width() / view.x).min(screen_height() / view.y);
+        let origin = (vec2(screen_width(), screen_height()) - view * scale) * 0.5;
+        (origin, scale)
+    }
+
+    fn current_scroll(&self) -> Vec2 {
+        if self.fit {
+            Vec2::ZERO
+        } else if self.running {
+            vec2(self.rt.scroll.0 as f32, self.rt.scroll.1 as f32)
+        } else {
+            self.scroll
+        }
+    }
+
+    /// Collect game input for the next tick (keys accumulate until a tick consumes them).
+    fn gather_input(&mut self) {
+        for k in get_keys_pressed() {
+            if let Some(v) = vk_code(k) {
+                self.input.pressed.insert(v);
+            }
+        }
+        self.input.down = get_keys_down().into_iter().filter_map(vk_code).collect();
+        for (i, b) in [MouseButton::Left, MouseButton::Middle, MouseButton::Right]
+            .into_iter()
+            .enumerate()
+        {
+            if is_mouse_button_pressed(b) {
+                self.input.clicked[i] = true;
+            }
+            if is_mouse_button_down(b) {
+                self.input.down.insert([1u16, 4, 2][i]);
+            }
+        }
+        let (origin, scale) = self.viewport();
+        let m = (Vec2::from(mouse_position()) - origin) / scale + self.current_scroll();
+        self.input.mouse = (m.x as f64, m.y as f64);
+        self.input.wheel += mouse_wheel().1;
+    }
+
+    /// Debug keys. Function keys and Ctrl combinations are reserved for the viewer;
+    /// everything else goes to the game.
+    fn handle_debug_keys(&mut self) {
+        let n = self.rt.game.frames.len();
+        let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+        if is_key_pressed(KeyCode::PageDown) && ctrl {
+            self.load_frame(self.rt.frame_index + 1);
+        }
+        if is_key_pressed(KeyCode::PageUp) && ctrl {
+            self.load_frame(self.rt.frame_index + n - 1);
+        }
+        if is_key_pressed(KeyCode::F1) {
+            self.hud = !self.hud;
+        }
+        if is_key_pressed(KeyCode::F2) {
+            self.running = !self.running;
+            self.scroll = vec2(self.rt.scroll.0 as f32, self.rt.scroll.1 as f32);
+        }
+        if is_key_pressed(KeyCode::F3) && !self.running {
+            self.rt.tick(&self.input);
+            self.input.consume_edges();
+        }
+        if is_key_pressed(KeyCode::F5) {
+            self.load_frame(self.rt.frame_index);
+        }
+        if is_key_pressed(KeyCode::F6) {
+            self.debug_boxes = !self.debug_boxes;
+        }
+        if is_key_pressed(KeyCode::F7) {
+            self.show_hidden = !self.show_hidden;
+        }
+        if is_key_pressed(KeyCode::F8) {
+            self.fit = !self.fit;
+        }
+        if ctrl {
+            const DIGITS: [KeyCode; 10] = [
+                KeyCode::Key1,
+                KeyCode::Key2,
+                KeyCode::Key3,
+                KeyCode::Key4,
+                KeyCode::Key5,
+                KeyCode::Key6,
+                KeyCode::Key7,
+                KeyCode::Key8,
+                KeyCode::Key9,
+                KeyCode::Key0,
+            ];
+            for (i, k) in DIGITS.iter().enumerate() {
+                if is_key_pressed(*k) {
+                    if let Some(off) = self.layer_off.get_mut(i) {
+                        *off = !*off;
+                    }
+                }
+            }
+        }
+
+        // Free camera only while paused; while running the game owns the view.
+        if !self.running {
+            let speed = if is_key_down(KeyCode::LeftShift) {
+                2400.0
+            } else {
+                800.0
+            } * get_frame_time();
+            let mut d = Vec2::ZERO;
+            if is_key_down(KeyCode::Left) {
+                d.x -= speed;
+            }
+            if is_key_down(KeyCode::Right) {
+                d.x += speed;
+            }
+            if is_key_down(KeyCode::Up) {
+                d.y -= speed;
+            }
+            if is_key_down(KeyCode::Down) {
+                d.y += speed;
+            }
+            self.scroll += d;
+            let mouse = Vec2::from(mouse_position());
+            if is_mouse_button_pressed(MouseButton::Left) {
+                self.drag_from = Some((mouse, self.scroll));
+            }
+            if is_mouse_button_down(MouseButton::Left) {
+                if let Some((start, scroll)) = self.drag_from {
+                    let (_, scale) = self.viewport();
+                    self.scroll = scroll - (mouse - start) / scale;
+                }
+            } else {
+                self.drag_from = None;
+            }
+            self.clamp_scroll();
+        }
+    }
+
+    /// Run as many fixed-rate game ticks as real time allows.
+    fn advance(&mut self) {
+        if !self.running {
+            return;
+        }
+        let dt = 1.0 / self.rt.frame_rate as f64;
+        self.tick_acc = (self.tick_acc + get_frame_time() as f64).min(dt * 4.0);
+        while self.tick_acc >= dt {
+            self.tick_acc -= dt;
+            self.rt.tick(&self.input);
+            self.input.consume_edges();
+            if self.rt.frame_log.len() != self.shown_frame {
+                self.on_frame_changed();
+            }
+        }
+    }
+
+    fn draw(&mut self) {
+        let g_border = self.rt.game.header.border_color;
+        clear_background(opaque(g_border));
+        let (screen_origin, screen_scale) = self.viewport();
+        let view = self.view_size();
+        let scene = self.rt.draw_items();
+        // Distortion effects need what's behind them as a texture: draw the game view
+        // into an off-screen target at native resolution, then scale it to the window.
+        let use_offscreen = !self.fit
+            && scene.iter().any(|i| {
+                matches!(i.visual, Visual::Effect { .. }) && (i.visible || self.show_hidden)
+            });
+        if use_offscreen {
+            let want = (view.x.max(1.0) as u32, view.y.max(1.0) as u32);
+            if self.offscreen.as_ref().is_none_or(|o| o.size != want) {
+                self.offscreen = Some(Offscreen::new(want.0, want.1));
+            }
+            let off = self.offscreen.as_ref().expect("created");
+            set_camera(&off.camera(&off.main));
+            clear_background(opaque(g_border));
+        }
+        let (origin, scale) = if use_offscreen {
+            (Vec2::ZERO, 1.0)
+        } else {
+            (screen_origin, screen_scale)
+        };
+        let scroll = self.current_scroll();
+        let frame = self.rt.frame();
+        let (fw, fh) = (frame.width as f32, frame.height as f32);
+
+        // Frame background, clipped to both the frame and the view.
+        let base = Xform {
+            origin,
+            scroll,
+            scale,
+        };
+        let tl = base.pt(0.0, 0.0).max(origin);
+        let br = base.pt(fw, fh).min(origin + view * scale);
+        if br.x > tl.x && br.y > tl.y {
+            draw_rectangle(
+                tl.x,
+                tl.y,
+                br.x - tl.x,
+                br.y - tl.y,
+                opaque(self.rt.background_color),
+            );
+        }
+
+        let layer_count = frame.layers.len().max(1);
+        let layer_info: Vec<(bool, Vec2)> = (0..layer_count)
+            .map(|i| match frame.layers.get(i) {
+                Some(l) => {
+                    let cx = if l.flags & LAYER_X_COEF != 0 {
+                        l.x_coefficient
+                    } else {
+                        1.0
+                    };
+                    let cy = if l.flags & LAYER_Y_COEF != 0 {
+                        l.y_coefficient
+                    } else {
+                        1.0
+                    };
+                    (l.flags & LAYER_VISIBLE != 0, vec2(cx, cy))
+                }
+                None => (true, Vec2::ONE),
+            })
+            .collect();
+
+        for item in &scene {
+            let li = item.layer.min(layer_count - 1);
+            let (layer_visible, coef) = layer_info[li];
+            if self.layer_off.get(li).copied().unwrap_or(false)
+                || (!layer_visible && !self.show_hidden)
+            {
+                continue;
+            }
+            let xf = Xform {
+                origin,
+                scroll: scroll * coef,
+                scale,
+            };
+            let shown = item.visible || self.show_hidden;
+            if shown {
+                self.draw_item(item, xf, view);
+            }
+            if self.debug_boxes {
+                self.draw_debug_box(item, xf);
+            }
+        }
+
+        if use_offscreen {
+            set_default_camera();
+            let off = self.offscreen.as_ref().expect("created");
+            off.blit(
+                &off.main,
+                screen_origin.x,
+                screen_origin.y,
+                view * screen_scale,
+            );
+        }
+        let (origin, scale) = (screen_origin, screen_scale);
+
+        // Frame transition.
+        if let Some(t) = &self.rt.transition {
+            draw_transition(t, origin, view * scale);
+        }
+
+        // Letterbox bars hide anything drawn outside the game view.
+        let sw = screen_width();
+        let sh = screen_height();
+        let border = opaque(g_border);
+        let end = origin + view * scale;
+        draw_rectangle(0.0, 0.0, sw, origin.y, border);
+        draw_rectangle(0.0, end.y, sw, sh - end.y, border);
+        draw_rectangle(0.0, 0.0, origin.x, sh, border);
+        draw_rectangle(end.x, 0.0, sw - end.x, sh, border);
+
+        // Custom mouse pointer (Cursor extension).
+        if self.running {
+            if let Some(h) = self.rt.cursor_image() {
+                if let (Some(tex), Some(e)) = (self.textures.get(&self.rt.game, h), self.rt.game.images.get(h)) {
+                    let m = Vec2::from(mouse_position());
+                    let hot = vec2(e.hotspot.0 as f32, e.hotspot.1 as f32) * scale;
+                    let params = DrawTextureParams { dest_size: Some(tex.size() * scale), ..Default::default() };
+                    draw_texture_ex(&tex, m.x - hot.x, m.y - hot.y, WHITE, params);
+                }
+            }
+        }
+
+        if self.hud {
+            self.draw_hud();
+        }
+    }
+
+    fn item_bounds(&self, item: &SceneItem) -> Rect {
+        match &item.visual {
+            Visual::Image { handle } => match self.rt.game.images.get(*handle) {
+                Some(e) => {
+                    let (sx, sy) = (item.scale.0.abs(), item.scale.1.abs());
+                    Rect::new(
+                        item.x - e.hotspot.0 as f32 * sx,
+                        item.y - e.hotspot.1 as f32 * sy,
+                        e.width as f32 * sx,
+                        e.height as f32 * sy,
+                    )
+                }
+                None => Rect::new(item.x, item.y, 16.0, 16.0),
+            },
+            Visual::Shape { w, h, .. }
+            | Visual::Placeholder { w, h }
+            | Visual::Text { w, h, .. }
+            | Visual::Effect { w, h, .. } => Rect::new(item.x, item.y, *w, *h),
+            Visual::Glyphs { handles } => {
+                let (mut tw, mut th) = (0.0f32, 0.0f32);
+                for e in handles.iter().filter_map(|h| self.rt.game.images.get(*h)) {
+                    tw += e.width as f32;
+                    th = th.max(e.height as f32);
+                }
+                Rect::new(item.x - tw, item.y - th, tw, th)
+            }
+        }
+    }
+
+    fn draw_item(&mut self, item: &SceneItem, xf: Xform, view: Vec2) {
+        let b = self.item_bounds(item);
+        // Cull against the visible part of the world for this layer.
+        let visible_world = Rect::new(xf.scroll.x, xf.scroll.y, view.x, view.y);
+        if !visible_world.overlaps(&b) {
+            return;
+        }
+        let p = xf.pt(b.x, b.y);
+        let size = vec2(b.w, b.h) * xf.scale;
+        match &item.visual {
+            Visual::Image { handle } => {
+                if let Some(tex) = self.textures.get(&self.rt.game, *handle) {
+                    let (sx, sy) = item.scale;
+                    let params = DrawTextureParams {
+                        dest_size: Some(size),
+                        flip_x: sx < 0.0,
+                        flip_y: sy < 0.0,
+                        rotation: -item.angle.to_radians(),
+                        pivot: Some(xf.pt(item.x, item.y)),
+                        ..Default::default()
+                    };
+                    let material = self.inks.for_effect(item.ink_effect);
+                    if let Some(m) = material {
+                        gl_use_material(m);
+                    }
+                    draw_texture_ex(&tex, p.x, p.y, rgba(item.tint), params);
+                    if material.is_some() {
+                        gl_use_default_material();
+                    }
+                }
+            }
+            Visual::Shape { shape, .. } => {
+                let border = shape.border_size as f32 * xf.scale;
+                let bcol = opaque(shape.border_color);
+                match shape.kind {
+                    ShapeKind::Line => {
+                        let (mut a, mut c) = (p, p + size);
+                        if shape.line_flags & 1 != 0 {
+                            std::mem::swap(&mut a.x, &mut c.x);
+                        }
+                        if shape.line_flags & 2 != 0 {
+                            std::mem::swap(&mut a.y, &mut c.y);
+                        }
+                        draw_line(a.x, a.y, c.x, c.y, border.max(1.0), bcol);
+                    }
+                    ShapeKind::Ellipse => {
+                        let c = p + size * 0.5;
+                        match shape.fill {
+                            Fill::Solid(col) => {
+                                draw_ellipse(c.x, c.y, size.x / 2.0, size.y / 2.0, 0.0, opaque(col))
+                            }
+                            Fill::Gradient { from, .. } => draw_ellipse(
+                                c.x,
+                                c.y,
+                                size.x / 2.0,
+                                size.y / 2.0,
+                                0.0,
+                                opaque(from),
+                            ),
+                            _ => {}
+                        }
+                        if shape.border_size > 0 {
+                            draw_ellipse_lines(
+                                c.x,
+                                c.y,
+                                size.x / 2.0,
+                                size.y / 2.0,
+                                0.0,
+                                border,
+                                bcol,
+                            );
+                        }
+                    }
+                    _ => {
+                        match shape.fill {
+                            Fill::Solid(col) => {
+                                draw_rectangle(p.x, p.y, size.x, size.y, opaque(col))
+                            }
+                            Fill::Gradient { from, to, vertical } => {
+                                draw_gradient(p, size, from, to, vertical)
+                            }
+                            Fill::Motif(img) => {
+                                self.draw_tiled(img as u32, p, size, xf.scale, rgba(item.tint))
+                            }
+                            Fill::None => {}
+                        }
+                        if shape.border_size > 0 {
+                            draw_rectangle_lines(p.x, p.y, size.x, size.y, border * 2.0, bcol);
+                        }
+                    }
+                }
+            }
+            Visual::Text {
+                text,
+                font,
+                color,
+                flags,
+                size: size_override,
+                ..
+            } => {
+                let (f, px) = self.fonts.get(&self.rt.game, *font);
+                let px = size_override.unwrap_or(px);
+                let mut c = rgba(*color);
+                c.a = item.tint[3] as f32 / 255.0;
+                text::draw_text_box(
+                    text,
+                    f.as_ref(),
+                    px * xf.scale,
+                    c,
+                    *flags,
+                    p.x,
+                    p.y,
+                    size.x,
+                    size.y,
+                );
+            }
+            Visual::Glyphs { handles } => {
+                // Laid out right-to-left from the bottom-right corner.
+                let mut right = p.x + size.x;
+                let bottom = p.y + size.y;
+                for h in handles.iter().rev() {
+                    let Some(tex) = self.textures.get(&self.rt.game, *h) else {
+                        continue;
+                    };
+                    let s = tex.size() * xf.scale;
+                    right -= s.x;
+                    let params = DrawTextureParams {
+                        dest_size: Some(s),
+                        ..Default::default()
+                    };
+                    draw_texture_ex(&tex, right, bottom - s.y, rgba(item.tint), params);
+                }
+            }
+            Visual::Effect { params, .. } => {
+                if std::env::var_os("FUSION_RT_NO_EFFECTS").is_some() {
+                    return;
+                }
+                let Some(off) = &self.offscreen else { return };
+                let Some(material) = &off.material else {
+                    return;
+                };
+                // Snapshot what has been drawn so far, then redraw this region distorted.
+                let (tw, th) = (off.size.0 as f32, off.size.1 as f32);
+                set_camera(&off.camera(&off.snapshot));
+                off.blit(&off.main, 0.0, 0.0, vec2(tw, th));
+                set_camera(&off.camera(&off.main));
+                let src = Rect::new(p.x, p.y, size.x, size.y);
+                let flip = OFFSCREEN_FLIP_Y;
+                let (v0, v1) = if flip {
+                    (1.0 - (p.y + size.y) / th, 1.0 - p.y / th)
+                } else {
+                    (p.y / th, (p.y + size.y) / th)
+                };
+                material.set_uniform("src", vec4(p.x / tw, v0, (p.x + size.x) / tw, v1));
+                material.set_uniform(
+                    "params",
+                    vec4(
+                        params.effect as f32,
+                        params.vertical as u8 as f32,
+                        params.zoom,
+                        params.waves,
+                    ),
+                );
+                gl_use_material(material);
+                let region = DrawTextureParams {
+                    dest_size: Some(size),
+                    source: Some(src),
+                    flip_y: flip,
+                    ..Default::default()
+                };
+                draw_texture_ex(&off.snapshot.texture, p.x, p.y, WHITE, region);
+                gl_use_default_material();
+            }
+            Visual::Placeholder { .. } => {}
+        }
+    }
+
+    fn draw_tiled(&mut self, handle: u32, p: Vec2, size: Vec2, scale: f32, tint: Color) {
+        let Some(tex) = self.textures.get(&self.rt.game, handle) else {
+            return;
+        };
+        let tile = tex.size() * scale;
+        if tile.x < 0.5 || tile.y < 0.5 {
+            return;
+        }
+        let mut y = 0.0;
+        while y < size.y {
+            let th = tile.y.min(size.y - y);
+            let mut x = 0.0;
+            while x < size.x {
+                let tw = tile.x.min(size.x - x);
+                let src = Rect::new(0.0, 0.0, tw / scale, th / scale);
+                let params = DrawTextureParams {
+                    dest_size: Some(vec2(tw, th)),
+                    source: Some(src),
+                    ..Default::default()
+                };
+                draw_texture_ex(&tex, p.x + x, p.y + y, tint, params);
+                x += tile.x;
+            }
+            y += tile.y;
+        }
+    }
+
+    fn draw_debug_box(&self, item: &SceneItem, xf: Xform) {
+        let b = self.item_bounds(item);
+        let p = xf.pt(b.x, b.y);
+        let col = match (&item.visual, item.visible) {
+            (Visual::Placeholder { .. }, _) => ORANGE,
+            (_, false) => GRAY,
+            (_, true) if item.background => SKYBLUE,
+            _ => LIME,
+        };
+        draw_rectangle_lines(p.x, p.y, b.w * xf.scale, b.h * xf.scale, 1.0, col);
+        draw_text(&item.label, p.x + 2.0, p.y + 12.0, 14.0, col);
+    }
+
+    fn draw_hud(&self) {
+        let f = self.rt.frame();
+        let unimpl = self.rt.unimplemented.borrow();
+        let mut top: Vec<_> = unimpl.iter().collect();
+        top.sort_by(|a, b| b.1.cmp(a.1));
+        let lines = [
+            format!(
+                "Frame {}/{}: \"{}\"  {}x{}  objects {}  tick {}  timer {:.1}s  {}",
+                self.rt.frame_index,
+                self.rt.game.frames.len() - 1,
+                f.name,
+                f.width,
+                f.height,
+                self.rt.instances.len(),
+                self.rt.tick,
+                self.rt.timer_ms / 1000.0,
+                if self.running { "RUNNING" } else { "PAUSED" },
+            ),
+            format!(
+                "scroll {:.0},{:.0}  {}  hidden {}  boxes {}  {} fps{}",
+                self.current_scroll().x,
+                self.current_scroll().y,
+                if self.fit { "FIT" } else { "1:1" },
+                if self.show_hidden { "shown" } else { "off" },
+                if self.debug_boxes { "on" } else { "off" },
+                get_fps(),
+                if self.rt.finished { "  [game ended]" } else { "" },
+            ),
+            format!(
+                "layers: {}",
+                f.layers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        let off = self.layer_off.get(i).copied().unwrap_or(false);
+                        format!("{}{}:{}", if off { "-" } else { "" }, (i + 1) % 10, l.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            ),
+            format!(
+                "unimplemented ({}): {}",
+                top.len(),
+                top.iter().take(6).map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", ")
+            ),
+            "F1 HUD  F2 pause  F3 step  F5 restart frame  F6 boxes  F7 hidden  F8 fit  Ctrl+PgUp/PgDn frame  Ctrl+1-0 layer  Ctrl+Q quit".into(),
+        ];
+        let h = 18.0 * lines.len() as f32 + 8.0;
+        draw_rectangle(0.0, 0.0, screen_width(), h, Color::new(0.0, 0.0, 0.0, 0.65));
+        for (i, l) in lines.iter().enumerate() {
+            draw_text(l, 6.0, 16.0 + 18.0 * i as f32, 18.0, WHITE);
+        }
+    }
+}
+
+/// Draw a transition as coverage of the view with its colour. Wipe effects cover the
+/// screen geometrically; anything we don't model is drawn as a fade.
+fn draw_transition(t: &crate::runtime::TransitionState, origin: Vec2, size: Vec2) {
+    let k = t.coverage();
+    let c = opaque(t.color);
+    let (x, y, w, h) = (origin.x, origin.y, size.x, size.y);
+    match t.effect.as_str() {
+        // Two doors closing from the left and right edges.
+        "DOOR" => {
+            let half = w / 2.0 * k;
+            draw_rectangle(x, y, half, h, c);
+            draw_rectangle(x + w - half, y, half, h, c);
+        }
+        // Horizontal bands growing until they meet.
+        "BAND" => {
+            const BANDS: usize = 8;
+            let bh = h / BANDS as f32;
+            for i in 0..BANDS {
+                draw_rectangle(x, y + bh * i as f32, w, bh * k, c);
+            }
+        }
+        // A rectangle growing out of the centre.
+        "SQUA" | "ZOOM" | "OPEN" => {
+            let (cw, ch) = (w * k, h * k);
+            draw_rectangle(x + (w - cw) / 2.0, y + (h - ch) / 2.0, cw, ch, c);
+        }
+        // Covering from the left.
+        "SCRL" | "SCRO" | "PUSH" => draw_rectangle(x, y, w * k, h, c),
+        _ => {
+            let mut c = c;
+            c.a = k;
+            draw_rectangle(x, y, w, h, c);
+        }
+    }
+}
+
+fn draw_gradient(p: Vec2, size: Vec2, from: [u8; 4], to: [u8; 4], vertical: bool) {
+    let (a, b) = (opaque(from), opaque(to));
+    let (c_tl, c_tr, c_br, c_bl) = if vertical { (a, a, b, b) } else { (a, b, b, a) };
+    let v = |x: f32, y: f32, c: Color| Vertex::new(x, y, 0.0, 0.0, 0.0, c);
+    let mesh = Mesh {
+        vertices: vec![
+            v(p.x, p.y, c_tl),
+            v(p.x + size.x, p.y, c_tr),
+            v(p.x + size.x, p.y + size.y, c_br),
+            v(p.x, p.y + size.y, c_bl),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        texture: None,
+    };
+    draw_mesh(&mesh);
+}
+
+/// Run the game (or take a screenshot). Call from inside a Macroquad window.
+pub async fn run(game: GameData, opts: ViewerOptions) {
+    if game.frames.is_empty() {
+        eprintln!("game has no frames to display");
+        return;
+    }
+    let rt = Runtime::with_save_root(game, opts.start_frame, opts.save_dir.clone());
+    let mut v = Viewer {
+        shown_frame: rt.frame_log.len(),
+        rt,
+        textures: Textures::default(),
+        inks: InkMaterials::new(),
+        fonts: text::Fonts::default(),
+        audio: audio_out::AudioOut::new(!opts.mute && opts.screenshot.is_none()),
+        offscreen: None,
+        scroll: Vec2::ZERO,
+        fit: opts.fit,
+        show_hidden: opts.show_hidden,
+        debug_boxes: false,
+        hud: opts.screenshot.is_none(),
+        running: opts.run_events,
+        tick_acc: 0.0,
+        input: Input::default(),
+        layer_off: Vec::new(),
+        drag_from: None,
+    };
+    v.on_frame_changed();
+    for &l in &opts.hidden_layers {
+        if let Some(off) = v.layer_off.get_mut(l) {
+            *off = true;
+        }
+    }
+
+    if let Some(path) = opts.screenshot {
+        if opts.run_events {
+            for _ in 0..opts.screenshot_ticks {
+                v.rt.tick(&Input::default());
+                if v.rt.frame_log.len() != v.shown_frame {
+                    v.on_frame_changed();
+                }
+            }
+        }
+        // A couple of frames so the window has its final size before capturing.
+        for _ in 0..3 {
+            v.draw();
+            next_frame().await;
+        }
+        v.draw();
+        get_screen_data().export_png(&path.to_string_lossy());
+        eprintln!(
+            "Saved screenshot of frame {} (tick {}) to {}",
+            v.rt.frame_index,
+            v.rt.tick,
+            path.display()
+        );
+        return;
+    }
+
+    loop {
+        let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+        if ctrl && is_key_pressed(KeyCode::Q) {
+            break;
+        }
+        v.handle_debug_keys();
+        v.gather_input();
+        v.advance();
+        v.audio.process(&mut v.rt).await;
+        show_mouse((v.rt.cursor_visible && v.rt.cursor_object.is_none()) || !v.running);
+        v.draw();
+        next_frame().await;
+    }
+}

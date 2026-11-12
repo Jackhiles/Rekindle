@@ -1,0 +1,17 @@
+/target
+
+# Never commit game data or proprietary runtime files. This repository is asset-free.
+/Tools/
+*.exe
+*.ccn
+*.dll
+*.mfx
+*.sft
+*.dat
+*.ogg
+*.wav
+*.mp3
+
+# Local extraction / test output
+/extracted/
+/out/

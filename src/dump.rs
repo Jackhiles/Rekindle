@@ -1,0 +1,295 @@
+//! `--dump-info` report.
+
+use fusion_rt::ctf_loader::chunk::chunk_name;
+use fusion_rt::ctf_loader::{GameData, ObjectKind};
+use std::collections::BTreeMap;
+
+fn count_by<K: Ord, I: IntoIterator<Item = K>>(it: I) -> BTreeMap<K, usize> {
+    let mut m = BTreeMap::new();
+    for k in it {
+        *m.entry(k).or_insert(0) += 1;
+    }
+    m
+}
+
+fn opt(s: &str) -> &str {
+    if s.is_empty() {
+        "-"
+    } else {
+        s
+    }
+}
+
+pub fn print_info(g: &GameData, verbose: bool) {
+    let h = &g.header;
+    println!("== Application");
+    println!(
+        "  File          {} ({:?}, game data at {:#x})",
+        g.path.display(),
+        g.container,
+        g.data_offset
+    );
+    println!("  Name          {}", opt(&g.name));
+    println!("  Author        {}", opt(&g.author));
+    println!("  Copyright     {}", opt(&g.copyright));
+    println!("  Editor file   {}", opt(&g.editor_filename));
+    println!("  Target file   {}", opt(&g.target_filename));
+    println!(
+        "  Format        {} | runtime {:#06x}.{} | product {} build {} | encrypted chunks: {}",
+        if g.unicode {
+            "PAMU (Unicode)"
+        } else {
+            "PAME (ANSI)"
+        },
+        g.runtime_version,
+        g.runtime_subversion,
+        g.product_version,
+        g.product_build,
+        if g.encrypted { "yes" } else { "no" }
+    );
+    println!(
+        "  Window        {}x{} @ {} fps, {} frames, border #{:02x}{:02x}{:02x}",
+        h.window_width,
+        h.window_height,
+        h.frame_rate,
+        h.frame_count,
+        h.border_color[0],
+        h.border_color[1],
+        h.border_color[2]
+    );
+    println!(
+        "  Start         score {}, lives {}",
+        h.initial_score, h.initial_lives
+    );
+    if !g.pack_files.is_empty() {
+        let names: Vec<_> = g.pack_files.iter().map(|p| p.name.as_str()).collect();
+        println!("  Packed files  {} ({})", names.len(), names.join(", "));
+    }
+
+    println!("\n== Assets");
+    let modes = count_by(g.images.images.iter().map(|i| i.graphic_mode));
+    let alpha = g
+        .images
+        .images
+        .iter()
+        .filter(|i| i.flags & 0x10 != 0)
+        .count();
+    let unsupported = g.images.images.iter().filter(|i| !i.is_supported()).count();
+    let modes: Vec<_> = modes
+        .iter()
+        .map(|(m, n)| format!("mode {m}: {n}"))
+        .collect();
+    println!(
+        "  Images        {} ({}; {} with alpha; {} not decodable yet)",
+        g.images.len(),
+        modes.join(", "),
+        alpha,
+        unsupported
+    );
+    for (label, bank) in [("Sounds", &g.sounds), ("Music", &g.music)] {
+        let fmts = count_by(bank.sounds.iter().map(|s| s.format));
+        let fmts: Vec<_> = fmts.iter().map(|(f, n)| format!("{f:?}: {n}")).collect();
+        let bytes: u64 = bank.sounds.iter().map(|s| s.decompressed_size as u64).sum();
+        println!(
+            "  {label:<13} {} ({}; {:.1} MiB)",
+            bank.len(),
+            fmts.join(", "),
+            bytes as f64 / 1048576.0
+        );
+    }
+    let faces: Vec<_> = g
+        .fonts
+        .fonts
+        .iter()
+        .map(|f| format!("{} {}", f.face_name, f.height.abs()))
+        .collect();
+    println!("  Fonts         {} ({})", faces.len(), faces.join(", "));
+    println!(
+        "  Globals       {} values, {} strings",
+        g.global_values.len(),
+        g.global_strings.len()
+    );
+
+    println!("\n== Objects: {} definitions", g.objects.len());
+    let kinds = count_by(g.objects.iter().map(|o| match o.kind {
+        ObjectKind::Extension(_) => "Extension objects".to_string(),
+        k => k.label(),
+    }));
+    for (k, n) in &kinds {
+        println!("  {k:<20} {n}");
+    }
+    if !g.extensions.is_empty() {
+        let names: Vec<_> = g
+            .extensions
+            .iter()
+            .map(|e| format!("[{}] {}", e.handle, e.name))
+            .collect();
+        println!("  Extensions used: {}", names.join(", "));
+    }
+    if verbose {
+        for o in &g.objects {
+            let ext = match o.kind {
+                ObjectKind::Extension(t) => g
+                    .extensions
+                    .iter()
+                    .find(|e| e.handle as i32 == t as i32 - 32)
+                    .map(|e| format!(" ({})", e.name))
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            println!(
+                "    #{:<5} {:<18} {}{}",
+                o.handle,
+                o.kind.label(),
+                o.name,
+                ext
+            );
+        }
+    }
+
+    println!("\n== Frames: {}", g.frames.len());
+    println!(
+        "  {:>3}  {:<32} {:>11} {:>6} {:>9} {:>10}  bg",
+        "#", "name", "size", "layers", "instances", "events(B)"
+    );
+    let mut unresolved = 0;
+    for (i, f) in g.frames.iter().enumerate() {
+        unresolved += f
+            .instances
+            .iter()
+            .filter(|inst| g.object(inst.object_info).is_none())
+            .count();
+        println!(
+            "  {:>3}  {:<32} {:>11} {:>6} {:>9} {:>10}  #{:02x}{:02x}{:02x}",
+            i,
+            opt(&f.name),
+            format!("{}x{}", f.width, f.height),
+            f.layers.len(),
+            f.instances.len(),
+            f.events.as_ref().map_or(0, |e| e.len()),
+            f.background_color[0],
+            f.background_color[1],
+            f.background_color[2]
+        );
+        if verbose {
+            for (li, l) in f.layers.iter().enumerate() {
+                let n = f
+                    .instances
+                    .iter()
+                    .filter(|x| x.layer as usize == li)
+                    .count();
+                println!(
+                    "        layer {li}: {:<24} scroll {:.2}/{:.2}, {n} instances",
+                    opt(&l.name),
+                    l.x_coefficient,
+                    l.y_coefficient
+                );
+            }
+        }
+    }
+    if unresolved > 0 {
+        println!("  !! {unresolved} instances reference unknown object definitions");
+    }
+
+    if verbose {
+        println!("\n== Top-level chunks");
+        for c in &g.chunks {
+            println!(
+                "  {:#06x} {:<22} flags {} {:>12} bytes",
+                c.id,
+                chunk_name(c.id),
+                c.flags,
+                c.size
+            );
+        }
+    }
+
+    println!("\n== Warnings: {}", g.warnings.len());
+    let shown = if verbose { g.warnings.len() } else { 10 };
+    for w in g.warnings.iter().take(shown) {
+        println!("  - {w}");
+    }
+    if g.warnings.len() > shown {
+        println!("  ... {} more (use -v)", g.warnings.len() - shown);
+    }
+}
+
+/// `--dump-events N`: print a frame's event sheet in a compact readable form.
+pub fn print_events(g: &GameData, frame: usize) {
+    use fusion_rt::ctf_loader::events::{Param, TokenValue};
+    let Some(f) = g.frames.get(frame) else {
+        println!("no frame {frame}");
+        return;
+    };
+    let obj = |oi: u16| {
+        g.object(oi)
+            .map_or(format!("oi#{oi}"), |o| format!("\"{}\"", o.name))
+    };
+    let param = |p: &Param| -> String {
+        match p {
+            Param::Expression { comparison, tokens } => {
+                let t: Vec<String> = tokens
+                    .iter()
+                    .map(|t| match &t.value {
+                        TokenValue::Long(v) => v.to_string(),
+                        TokenValue::Double(v) => v.to_string(),
+                        TokenValue::String(s) => format!("{s:?}"),
+                        TokenValue::Index(i) => format!("[{}/{} #{i}]", t.object_type, t.num),
+                        TokenValue::None if t.object_type >= 2 => {
+                            format!("{}.{}", obj(t.object_info), t.num)
+                        }
+                        TokenValue::None => format!("<{}/{}>", t.object_type, t.num),
+                    })
+                    .collect();
+                format!("{comparison:?} {}", t.join(" "))
+            }
+            Param::Object { object_info, .. } => obj(*object_info),
+            Param::Create {
+                position,
+                object_info,
+                ..
+            } => {
+                format!(
+                    "create {} at {},{} rel {}",
+                    obj(*object_info),
+                    position.x,
+                    position.y,
+                    position.parent_object_info
+                )
+            }
+            other => {
+                let s = format!("{other:?}");
+                s.chars().take(80).collect()
+            }
+        }
+    };
+    println!(
+        "== Frame {frame} \"{}\": {} events",
+        f.name,
+        f.event_sheet.groups.len()
+    );
+    for (i, gr) in f.event_sheet.groups.iter().enumerate() {
+        println!("#{i} flags {:#x}", gr.flags);
+        for (kind, list) in [("IF", &gr.conditions), ("DO", &gr.actions)] {
+            for a in list.iter() {
+                let who = if a.object_type >= 0 {
+                    obj(a.object_info)
+                } else {
+                    format!("sys{}", a.object_type)
+                };
+                let ps: Vec<String> = a
+                    .params
+                    .iter()
+                    .map(|p| format!("{}:{}", p.code, param(&p.value)))
+                    .collect();
+                println!(
+                    "   {kind} {}{who} {}/{}  {}",
+                    if a.negated() { "NOT " } else { "" },
+                    a.object_type,
+                    a.num,
+                    ps.join(" | ")
+                );
+            }
+        }
+    }
+}
