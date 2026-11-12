@@ -71,6 +71,10 @@ struct Cli {
     #[arg(long)]
     mute: bool,
 
+    /// Report data the runtime may show differently from the original, then exit.
+    #[arg(long)]
+    audit: bool,
+
     /// Print the event sheet of frame N and exit.
     #[arg(long, value_name = "N")]
     dump_events: Option<usize>,
@@ -112,6 +116,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.audit {
+        dump::print_audit(&game);
+        return Ok(());
+    }
     if let Some(f) = cli.dump_events {
         dump::print_events(&game, f);
         return Ok(());

@@ -293,3 +293,85 @@ pub fn print_events(g: &GameData, frame: usize) {
         }
     }
 }
+
+/// `--audit`: look for data the runtime is likely to show differently from the original.
+pub fn print_audit(g: &GameData) {
+    use fusion_rt::ctf_loader::ObjectProperties;
+    use fusion_rt::render::text::find_font_file;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    println!("== Audit: {}", g.name);
+
+    // 1. Colour-keyed images whose key never matches although the corners agree on a colour.
+    let mut suspicious = Vec::new();
+    for e in &g.images.images {
+        if e.flags & 0x10 != 0 || e.width < 4 || e.height < 4 {
+            continue;
+        }
+        let Ok(img) = e.decode_rgba() else { continue };
+        let any_clear = img.pixels.chunks_exact(4).any(|p| p[3] == 0);
+        if any_clear {
+            continue;
+        }
+        let (w, h) = (img.width as usize, img.height as usize);
+        let px = |x: usize, y: usize| &img.pixels[(y * w + x) * 4..(y * w + x) * 4 + 3];
+        let corners = [px(0, 0), px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1)];
+        // A near-miss: the border is within a few levels of the key (the prologue bug's signature).
+        let near = |c: &[u8]| c.iter().zip(e.transparent.iter()).all(|(a, b)| (*a as i32 - *b as i32).abs() <= 12);
+        if corners.iter().all(|c| *c == corners[0]) && near(corners[0]) {
+            suspicious.push((e.handle, e.width, e.height, e.transparent, corners[0].to_vec()));
+        }
+    }
+    println!("  opaque images whose border nearly matches the transparent colour (possible missed transparency): {}", suspicious.len());
+    for (h, w, hh, key, c) in suspicious.iter().take(12) {
+        println!("    image {h} {w}x{hh}: key {:?}, border {:?}", &key[..3], c);
+    }
+
+    // 2. Animation frames and backdrops pointing at missing images.
+    let mut missing = 0;
+    for o in &g.objects {
+        match &o.props {
+            ObjectProperties::Common(c) => {
+                for a in c.animations.iter().flatten() {
+                    for d in a.directions.iter().flatten() {
+                        missing += d.frames.iter().filter(|&&f| g.images.get(f as u32).is_none()).count();
+                    }
+                }
+            }
+            ObjectProperties::Backdrop(b) => missing += g.images.get(b.image as u32).is_none() as usize,
+            _ => {}
+        }
+    }
+    println!("  animation / backdrop references to missing images: {missing}");
+
+    // 3. Ink effects drawn approximately or not at all.
+    let mut inks: BTreeMap<u16, usize> = BTreeMap::new();
+    for o in &g.objects {
+        let e = o.ink().effect;
+        if !matches!(e, 0 | 1 | 2 | 3 | 4 | 5 | 9 | 11) {
+            *inks.entry(e).or_insert(0) += 1;
+        }
+    }
+    println!("  objects with unsupported ink effects (effect: count): {inks:?}");
+
+    // 4. Fonts that need a substitute.
+    let missing_fonts: BTreeSet<String> = g
+        .fonts
+        .fonts
+        .iter()
+        .filter(|f| find_font_file(&f.face_name, false, false).is_none())
+        .map(|f| f.face_name.clone())
+        .collect();
+    println!("  fonts not installed (drawn with a substitute): {missing_fonts:?}");
+
+    // 5. Backdrops with a non-zero image hotspot (placed by top-left corner).
+    let odd: usize = g
+        .objects
+        .iter()
+        .filter(|o| match &o.props {
+            ObjectProperties::Backdrop(b) => g.images.get(b.image as u32).is_some_and(|e| e.hotspot != (0, 0)),
+            _ => false,
+        })
+        .count();
+    println!("  backdrops with a non-zero hotspot: {odd}");
+}

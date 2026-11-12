@@ -76,7 +76,8 @@ fn candidates(face: &str, bold: bool, italic: bool) -> Vec<String> {
     out
 }
 
-fn find_font_file(face: &str, bold: bool, italic: bool) -> Option<PathBuf> {
+/// The installed font file for a face name, if any.
+pub fn find_font_file(face: &str, bold: bool, italic: bool) -> Option<PathBuf> {
     let dirs = font_dirs();
     for name in candidates(face, bold, italic) {
         for d in &dirs {
