@@ -39,6 +39,8 @@ pub struct ImageEntry {
     header_size: usize,
     /// Newer 2.5+ banks: `compressed` is `[size u32][LZ4 block]` holding only the pixels.
     lz4: bool,
+    /// 1.5 banks: `compressed` uses the 1.5 deflate variant (decompressed on demand).
+    old: bool,
     /// Colours for 8-bit palette images.
     palette: Option<std::sync::Arc<Vec<[u8; 4]>>>,
 }
@@ -120,6 +122,7 @@ impl ImageBank {
                 decoded: None,
                 header_size: IMAGE_HEADER_SIZE,
                 lz4: false,
+                old: false,
                 palette: palette.clone(),
             });
         }
@@ -173,6 +176,7 @@ impl ImageBank {
                 decoded: None,
                 header_size: 0,
                 lz4: true,
+                old: false,
                 palette: None,
             });
         }
@@ -189,7 +193,10 @@ impl ImageBank {
         let mut images = Vec::with_capacity(count);
         for i in 0..count {
             let handle = r.read_u32()?;
-            let (raw, used) = super::old_inflate::inflate_block(&bank[r.pos()..])
+            let start = r.pos();
+            // The block's compressed length is only known after inflating it; keep just
+            // the header now and inflate again when the image is drawn.
+            let (raw, used) = super::old_inflate::inflate_block(&bank[start..])
                 .with_context(|| format!("image #{i} (handle {handle})"))?;
             r.skip(used)?;
             let mut h = ByteReader::new(&raw);
@@ -215,10 +222,11 @@ impl ImageBank {
                 transparent: [0, 0, 0, 0],
                 data_size,
                 decompressed_size,
-                compressed: Blob::new(Vec::new()),
-                decoded: Some(Blob::new(raw)),
+                compressed: bank.slice(start..start + used)?,
+                decoded: None,
                 header_size,
                 lz4: false,
+                old: true,
                 palette: palette.clone(),
             });
         }
@@ -325,6 +333,7 @@ impl ImageEntry {
         }
         let raw = match &self.decoded {
             Some(b) => b.to_vec(),
+            None if self.old => super::old_inflate::inflate_block(&self.compressed)?.0,
             None => inflate(&self.compressed, self.decompressed_size as usize)?,
         };
         let hs = self.header_size;

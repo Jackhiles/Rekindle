@@ -4,7 +4,8 @@
 //! MP3 music can take a while) and played as soon as they are ready. The backend can
 //! only play a sound from its start at a fixed pan, so positioned or panned playback
 //! (resume after pause, "set position", stereo pan) plays a variant built from the
-//! decoded samples.
+//! sound's samples. Those are decoded again on demand rather than kept in memory, since
+//! variants are rare and music samples are large.
 
 use crate::audio;
 use crate::runtime::audio::AudioCommand;
@@ -12,12 +13,10 @@ use crate::runtime::Runtime;
 use macroquad::audio::{load_sound_from_bytes, play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
 
 enum Slot {
     Decoding,
-    /// The plain sound, plus its 44.1 kHz stereo samples for variants.
-    Ready(Sound, Arc<Vec<i16>>),
+    Ready(Sound),
     Failed,
 }
 
@@ -30,13 +29,26 @@ struct Start {
     start_ms: f64,
 }
 
-/// Decoded stereo samples and exact duration, or an error message.
-type Decoded = (u32, Result<(Vec<i16>, f64), String>);
+impl Start {
+    fn needs_variant(&self) -> bool {
+        self.start_ms > 1.0 || self.pan.abs() >= 0.01
+    }
+}
+
+/// What a worker thread produced.
+enum Decoded {
+    /// 44.1 kHz stereo samples and the exact duration (first decode of a sound).
+    Sound(u32, Result<(Vec<i16>, f64), String>),
+    /// A ready-to-load WAV for a positioned / panned start.
+    Variant(u32, Start, Vec<u8>),
+}
 
 pub struct AudioOut {
     slots: HashMap<u32, Slot>,
     /// Sounds that should start once decoding finishes.
     pending: HashMap<u32, Start>,
+    /// Variants being prepared (the latest request per sound wins).
+    pending_variants: HashMap<u32, Start>,
     /// Positioned / panned variants currently playing (one per sound).
     variants: HashMap<u32, Sound>,
     tx: Sender<Decoded>,
@@ -47,29 +59,57 @@ pub struct AudioOut {
 impl AudioOut {
     pub fn new(enabled: bool) -> Self {
         let (tx, rx) = channel();
-        Self { slots: HashMap::new(), pending: HashMap::new(), variants: HashMap::new(), tx, rx, enabled }
+        Self {
+            slots: HashMap::new(),
+            pending: HashMap::new(),
+            pending_variants: HashMap::new(),
+            variants: HashMap::new(),
+            tx,
+            rx,
+            enabled,
+        }
     }
 
-    fn start_decode(&mut self, rt: &Runtime, handle: u32) {
-        let Some(entry) = rt.game.sounds.get(handle) else {
-            self.slots.insert(handle, Slot::Failed);
-            return;
-        };
-        let entry = entry.clone();
-        let tx = self.tx.clone();
-        self.slots.insert(handle, Slot::Decoding);
-        std::thread::spawn(move || {
-            let r = entry
+    fn decode_samples(rt: &Runtime, handle: u32) -> Option<impl FnOnce() -> Result<(Vec<i16>, f64), String>> {
+        let entry = rt.game.sounds.get(handle)?.clone();
+        Some(move || {
+            entry
                 .data()
                 .map_err(|e| format!("{e:#}"))
                 .and_then(|d| audio::decode(&d).map_err(|e| format!("{e:#}")))
-                .map(|pcm| (audio::to_stereo_44k(&pcm), pcm.duration_ms()));
-            let _ = tx.send((handle, r));
+                .map(|pcm| (audio::to_stereo_44k(&pcm), pcm.duration_ms()))
+        })
+    }
+
+    fn start_decode(&mut self, rt: &Runtime, handle: u32) {
+        let Some(job) = Self::decode_samples(rt, handle) else {
+            self.slots.insert(handle, Slot::Failed);
+            return;
+        };
+        let tx = self.tx.clone();
+        self.slots.insert(handle, Slot::Decoding);
+        std::thread::spawn(move || {
+            let _ = tx.send(Decoded::Sound(handle, job()));
+        });
+    }
+
+    fn request_variant(&mut self, rt: &Runtime, handle: u32, st: Start) {
+        let first = self.pending_variants.insert(handle, st).is_none();
+        if !first {
+            return; // a worker is already on it; it will use the latest request
+        }
+        let Some(job) = Self::decode_samples(rt, handle) else { return };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            if let Ok((samples, _)) = job() {
+                let wav = audio::wav_from_stereo(&audio::stereo_variant(&samples, st.start_ms, st.pan));
+                let _ = tx.send(Decoded::Variant(handle, st, wav));
+            }
         });
     }
 
     fn stop(&mut self, handle: u32) {
-        if let Some(Slot::Ready(s, _)) = self.slots.get(&handle) {
+        if let Some(Slot::Ready(s)) = self.slots.get(&handle) {
             stop_sound(s);
         }
         if let Some(v) = self.variants.remove(&handle) {
@@ -77,22 +117,14 @@ impl AudioOut {
         }
     }
 
-    async fn start(&mut self, handle: u32, st: Start) {
+    fn start(&mut self, rt: &Runtime, handle: u32, st: Start) {
         self.stop(handle);
-        let Some(Slot::Ready(sound, samples)) = self.slots.get(&handle) else { return };
-        let params = PlaySoundParams { looped: st.looped, volume: st.volume };
-        if st.start_ms <= 1.0 && st.pan.abs() < 0.01 {
-            play_sound(sound, params);
+        if st.needs_variant() {
+            self.request_variant(rt, handle, st);
             return;
         }
-        // A one-off variant: from the requested position, with the pan baked in.
-        let wav = audio::wav_from_stereo(&audio::stereo_variant(samples, st.start_ms, st.pan));
-        match load_sound_from_bytes(&wav).await {
-            Ok(v) => {
-                play_sound(&v, params);
-                self.variants.insert(handle, v);
-            }
-            Err(e) => eprintln!("sound {handle}: {e:?}"),
+        if let Some(Slot::Ready(sound)) = self.slots.get(&handle) {
+            play_sound(sound, PlaySoundParams { looped: st.looped, volume: st.volume });
         }
     }
 
@@ -106,8 +138,9 @@ impl AudioOut {
             match cmd {
                 AudioCommand::Play { handle, looped, volume, pan, start_ms } => {
                     let st = Start { looped, volume, pan, start_ms };
+                    self.pending_variants.remove(&handle);
                     match self.slots.get(&handle) {
-                        Some(Slot::Ready(..)) => self.start(handle, st).await,
+                        Some(Slot::Ready(..)) => self.start(rt, handle, st),
                         Some(Slot::Failed) => {}
                         Some(Slot::Decoding) => {
                             self.pending.insert(handle, st);
@@ -120,10 +153,12 @@ impl AudioOut {
                 }
                 AudioCommand::Stop { handle } => {
                     self.pending.remove(&handle);
+                    self.pending_variants.remove(&handle);
                     self.stop(handle);
                 }
                 AudioCommand::StopAll => {
                     self.pending.clear();
+                    self.pending_variants.clear();
                     let handles: Vec<u32> = self.slots.keys().copied().collect();
                     for h in handles {
                         self.stop(h);
@@ -133,7 +168,10 @@ impl AudioOut {
                     if let Some(p) = self.pending.get_mut(&handle) {
                         p.volume = volume;
                     }
-                    if let Some(Slot::Ready(s, _)) = self.slots.get(&handle) {
+                    if let Some(p) = self.pending_variants.get_mut(&handle) {
+                        p.volume = volume;
+                    }
+                    if let Some(Slot::Ready(s)) = self.slots.get(&handle) {
                         set_sound_volume(s, volume);
                     }
                     if let Some(v) = self.variants.get(&handle) {
@@ -143,27 +181,47 @@ impl AudioOut {
             }
         }
 
-        while let Ok((handle, result)) = self.rx.try_recv() {
-            let slot = match result {
-                Ok((samples, ms)) => {
-                    rt.audio.durations.insert(handle, ms);
-                    match load_sound_from_bytes(&audio::wav_from_stereo(&samples)).await {
-                        Ok(s) => Slot::Ready(s, Arc::new(samples)),
+        while let Ok(done) = self.rx.try_recv() {
+            match done {
+                Decoded::Sound(handle, result) => {
+                    let slot = match result {
+                        Ok((samples, ms)) => {
+                            rt.audio.durations.insert(handle, ms);
+                            match load_sound_from_bytes(&audio::wav_from_stereo(&samples)).await {
+                                Ok(s) => Slot::Ready(s),
+                                Err(e) => {
+                                    eprintln!("sound {handle}: {e:?}");
+                                    Slot::Failed
+                                }
+                            }
+                        }
                         Err(e) => {
-                            eprintln!("sound {handle}: {e:?}");
+                            eprintln!("sound {handle}: {e}");
                             Slot::Failed
                         }
+                    };
+                    self.slots.insert(handle, slot);
+                    if let Some(st) = self.pending.remove(&handle) {
+                        self.start(rt, handle, st);
                     }
                 }
-                Err(e) => {
-                    eprintln!("sound {handle}: {e}");
-                    Slot::Failed
+                Decoded::Variant(handle, built_for, wav) => {
+                    // Still wanted? (A newer request with a different start re-decodes.)
+                    let Some(st) = self.pending_variants.remove(&handle) else { continue };
+                    if (st.start_ms - built_for.start_ms).abs() > 50.0 || (st.pan - built_for.pan).abs() > 0.01 {
+                        self.request_variant(rt, handle, st);
+                        continue;
+                    }
+                    match load_sound_from_bytes(&wav).await {
+                        Ok(v) => {
+                            play_sound(&v, PlaySoundParams { looped: st.looped, volume: st.volume });
+                            if let Some(old) = self.variants.insert(handle, v) {
+                                stop_sound(&old);
+                            }
+                        }
+                        Err(e) => eprintln!("sound {handle}: {e:?}"),
+                    }
                 }
-            };
-            self.slots.insert(handle, slot);
-            if let Some(st) = self.pending.remove(&handle) {
-                // The sound has been decoding since the request: skip what already "played".
-                self.start(handle, st).await;
             }
         }
     }

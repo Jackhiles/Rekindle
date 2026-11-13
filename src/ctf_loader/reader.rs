@@ -4,13 +4,30 @@ use anyhow::{bail, Result};
 use std::ops::{Deref, Range};
 use std::sync::Arc;
 
+/// Bytes behind a [`Blob`]: an owned buffer, or a read-only memory-mapped file.
+enum Backing {
+    Owned(Vec<u8>),
+    Mapped(memmap2::Mmap),
+}
+
+impl Deref for Backing {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Backing::Owned(v) => v,
+            Backing::Mapped(m) => m,
+        }
+    }
+}
+
 /// A cheaply clonable, shared view into a byte buffer.
 ///
-/// The whole game file is loaded once into an `Arc<Vec<u8>>`; uncompressed chunks
-/// and bank entries are just ranges into it, so large banks are never copied.
+/// The game file is memory-mapped once; uncompressed chunks and bank entries are just
+/// ranges into it, so large banks are never copied and the OS only reads (and keeps
+/// in memory) the parts that are actually used.
 #[derive(Clone)]
 pub struct Blob {
-    buf: Arc<Vec<u8>>,
+    buf: Arc<Backing>,
     range: Range<usize>,
 }
 
@@ -18,9 +35,25 @@ impl Blob {
     pub fn new(data: Vec<u8>) -> Self {
         let len = data.len();
         Self {
-            buf: Arc::new(data),
+            buf: Arc::new(Backing::Owned(data)),
             range: 0..len,
         }
+    }
+
+    /// Map a file read-only (falls back to reading it if mapping isn't possible).
+    pub fn map_file(path: &std::path::Path) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: the game file is opened read-only and treated as immutable input;
+        // games are not expected to be modified while they run.
+        let backing = match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(m) => Backing::Mapped(m),
+            Err(_) => Backing::Owned(std::fs::read(path)?),
+        };
+        let len = backing.len();
+        Ok(Self {
+            buf: Arc::new(backing),
+            range: 0..len,
+        })
     }
 
     pub fn as_slice(&self) -> &[u8] {

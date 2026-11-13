@@ -88,15 +88,15 @@ pub struct GameData {
 impl GameData {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        match Self::from_bytes(bytes, path.to_path_buf()) {
+        let file = Blob::map_file(path).with_context(|| format!("reading {}", path.display()))?;
+        match Self::from_blob(file, path.to_path_buf()) {
             Ok(g) => Ok(g),
             Err(e) => {
                 // "Separate data file" builds: a generic runtime .exe next to `<name>.dat`.
                 let dat = path.with_extension("dat");
                 if dat != path && dat.is_file() {
-                    let bytes = std::fs::read(&dat).with_context(|| format!("reading {}", dat.display()))?;
-                    let mut g = Self::from_bytes(bytes, dat.clone())?;
+                    let file = Blob::map_file(&dat).with_context(|| format!("reading {}", dat.display()))?;
+                    let mut g = Self::from_blob(file, dat.clone())?;
                     if g.icon.is_none() {
                         g.icon = std::fs::read(path).ok().and_then(|b| icon::from_pe(&b));
                     }
@@ -113,7 +113,10 @@ impl GameData {
     }
 
     pub fn from_bytes(bytes: Vec<u8>, path: PathBuf) -> Result<Self> {
-        let file = Blob::new(bytes);
+        Self::from_blob(Blob::new(bytes), path)
+    }
+
+    pub fn from_blob(file: Blob, path: PathBuf) -> Result<Self> {
         let container = exe::locate_game_data(&file)?;
         let base = container.data_offset;
 
