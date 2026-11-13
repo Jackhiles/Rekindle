@@ -1,7 +1,7 @@
 //! Logical sound state: which samples play on which channels and until when.
 //!
 //! The runtime decides *what* plays and answers "is playing" conditions from this model;
-//! a backend (the Macroquad window) turns the queued [`AudioCommand`]s into real sound.
+//! a backend (the mixer in `render::audio_out`) turns the queued [`AudioCommand`]s into real sound.
 
 use std::collections::HashMap;
 

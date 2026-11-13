@@ -46,7 +46,7 @@ The event interpreter runs each frame's event sheet at the game's frame rate:
 - **Effects**: the Perspective object warps whatever is drawn beneath it (panorama, perspective, sine wave, sine offset) with a GPU shader. Ink effects: semi-transparency, tint / alpha coefficients, add, subtract, invert, and AND / OR / XOR approximated with multiply / screen / difference blending.
 
 ### Audio and HUD objects
-- **Sound**: play sample (once, looped N times, on a channel), stop / pause / resume sample, channel or all, main / sample / channel volume, and the "sample / channel not playing" conditions. All bank formats (WAV PCM/ADPCM, OGG Vorbis, MP3) are decoded with `symphonia` on a background thread the first time a sound plays. Pausing restarts the sound on resume, and panning, frequency, positions and the MIDI music bank are not supported yet. `--mute` turns sound off.
+- **Sound**: play sample (once, looped N times, on a channel), stop / pause / resume sample, channel or all, main / sample / channel volume, and the "sample / channel not playing" conditions. All bank formats (WAV PCM/ADPCM, OGG Vorbis, MP3) are decoded with `symphonia` and streamed: each playing sound has a decoder thread that stays a fraction of a second ahead of Rekindle's mixer (`cpal` output), so long music never sits in memory as decoded PCM. Pan, volume, resume after pause and "set position" are applied while streaming; frequency changes and the MIDI music bank are not supported yet. `--mute` turns sound off.
 - **Counters, Score, Lives**: digit images, horizontal / vertical bars, image-per-value ("animation") and text display, with their min / max clamping. Score and Lives show the player's score and lives.
 - **String objects**: their paragraph text, colour and alignment, with word wrap. Game data only names fonts (face, size, weight), so the runtime looks the face up among the system's installed fonts (Windows `Fonts` folders, common Linux / macOS folders) and falls back to a default font.
 
@@ -176,8 +176,8 @@ Run them with `rekindle --scenario FILE_OR_DIR`, or as part of `cargo test` by s
 Debug environment variables: `REKINDLE_PROFILE=1` makes `--headless` print the slowest events;
 `REKINDLE_NO_EFFECTS=1` disables distortion effects for comparison. `REKINDLE_TRACE=N` prints each condition result of event N every tick.
 `REKINDLE_WALK_FRAMES=MS` shows every frame for MS milliseconds and exits (a memory benchmark; not logged as play time).
-`REKINDLE_TEXTURE_MB=N` changes the texture cache budget (default 192 MB). Textures and decoded sounds (about 160 MB)
-are kept in least-recently-used caches; whatever the current frame draws or is still playing is never dropped.
+`REKINDLE_TEXTURE_MB=N` changes the texture cache budget (default 192 MB): textures are kept in a least-recently-used
+cache, and whatever the current frame draws is never dropped.
 
 ## CLI
 
@@ -223,10 +223,10 @@ src/runtime/      object runtime + event interpreter (no rendering deps)
   files.rs        sandboxed save-file access
   ext/            native extension implementations (ini.rs, gsx.rs, clock.rs)
   scenario.rs     scripted regression scenarios
-src/audio.rs      decoding any bank sound to PCM / WAV (symphonia)
+src/audio.rs      decoding any bank sound, streamed block by block (symphonia), and resampling
 src/render/       Macroquad window: input mapping, drawing, debug HUD
   text.rs         system font lookup, word wrap, alignment
-  audio_out.rs    background decoding and Macroquad playback
+  audio_out.rs    the mixer: a streaming decoder thread per playing sound, cpal output
 src/main.rs       CLI;  src/dump.rs, src/extract.rs
 docs/FORMAT.md    format notes (what we know and how it was verified)
 reference/python/ original exploratory Python parsers (structural reference only)

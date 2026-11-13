@@ -1,5 +1,5 @@
-//! Sound decoding: anything in a sound bank (WAV PCM/ADPCM, OGG Vorbis, MP3) to PCM,
-//! re-encoded as a canonical 44.1 kHz stereo 16-bit WAV that every backend can play.
+//! Sound decoding: anything in a sound bank (WAV PCM/ADPCM, OGG Vorbis, MP3), either a
+//! block at a time ([`Stream`], for playback) or whole (`decode`, for tools and tests).
 
 use anyhow::{anyhow, Context, Result};
 use symphonia::core::audio::SampleBuffer;
@@ -28,60 +28,115 @@ impl Pcm {
     }
 }
 
+/// An audio file decoded a block at a time, so long music never has to be held as PCM.
+pub struct Stream {
+    format: Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    track_id: u32,
+    duration_ms: Option<f64>,
+}
+
+impl Stream {
+    /// Open an audio file of any supported format (WAV PCM/ADPCM, OGG Vorbis, MP3).
+    pub fn open(bytes: std::sync::Arc<[u8]>) -> Result<Self> {
+        let mut hint = Hint::new();
+        match &bytes[..] {
+            [b'R', b'I', b'F', b'F', ..] => hint.with_extension("wav"),
+            [b'O', b'g', b'g', b'S', ..] => hint.with_extension("ogg"),
+            _ => hint.with_extension("mp3"),
+        };
+        let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+            .context("unrecognised audio format")?;
+        let format = probed.format;
+        let track = format.default_track().ok_or_else(|| anyhow!("no audio track"))?;
+        let params = &track.codec_params;
+        let duration_ms = match (params.n_frames, params.sample_rate) {
+            (Some(n), Some(r)) if r > 0 && n > 0 => Some(n as f64 / r as f64 * 1000.0),
+            _ => None,
+        };
+        let decoder = symphonia::default::get_codecs()
+            .make(params, &DecoderOptions::default())
+            .context("unsupported codec")?;
+        Ok(Self { track_id: track.id, format, decoder, duration_ms })
+    }
+
+    /// Exact length from the file's headers, when it states one.
+    pub fn duration_ms(&self) -> Option<f64> {
+        self.duration_ms
+    }
+
+    /// The next decoded block: (sample rate, channels, interleaved samples); None at the end.
+    pub fn next_block(&mut self) -> Result<Option<(u32, usize, Vec<f32>)>> {
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(p) => p,
+                Err(SymError::IoError(_)) | Err(SymError::ResetRequired) => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            if packet.track_id() != self.track_id {
+                continue;
+            }
+            match self.decoder.decode(&packet) {
+                Ok(buf) => {
+                    let spec = *buf.spec();
+                    let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+                    sb.copy_interleaved_ref(buf);
+                    return Ok(Some((spec.rate, spec.channels.count(), sb.samples().to_vec())));
+                }
+                Err(SymError::DecodeError(_)) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+}
+
+/// Linear resampling of a block stream to interleaved stereo at `out_rate`, keeping its
+/// position across blocks (and across loops of a looping sound).
+pub struct Resampler {
+    out_rate: u32,
+    pos: f64,
+    prev: [f32; 2],
+}
+
+impl Resampler {
+    pub fn new(out_rate: u32) -> Self {
+        Self { out_rate, pos: 0.0, prev: [0.0; 2] }
+    }
+
+    /// Append the resampled stereo frames of one block to `out`.
+    pub fn push(&mut self, rate: u32, channels: usize, block: &[f32], out: &mut Vec<f32>) {
+        let ch = channels.max(1);
+        let n = block.len() / ch;
+        if n == 0 {
+            return;
+        }
+        let frame = |i: usize| -> [f32; 2] { [block[i * ch], block[i * ch + (ch > 1) as usize]] };
+        let step = rate.max(1) as f64 / self.out_rate.max(1) as f64;
+        // Position -1 is the previous block's last frame.
+        while self.pos + 1.0 < n as f64 {
+            let i = self.pos.floor();
+            let t = (self.pos - i) as f32;
+            let a = if i < 0.0 { self.prev } else { frame(i as usize) };
+            let b = frame((i + 1.0) as usize);
+            out.push(a[0] + (b[0] - a[0]) * t);
+            out.push(a[1] + (b[1] - a[1]) * t);
+            self.pos += step;
+        }
+        self.pos -= n as f64;
+        self.prev = frame(n - 1);
+    }
+}
+
 /// Decode an audio file of any supported format.
 pub fn decode(bytes: &[u8]) -> Result<Pcm> {
-    let mss = MediaSourceStream::new(
-        Box::new(std::io::Cursor::new(bytes.to_vec())),
-        Default::default(),
-    );
-    let mut hint = Hint::new();
-    match bytes {
-        [b'R', b'I', b'F', b'F', ..] => hint.with_extension("wav"),
-        [b'O', b'g', b'g', b'S', ..] => hint.with_extension("ogg"),
-        _ => hint.with_extension("mp3"),
-    };
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .context("unrecognised audio format")?;
-    let mut format = probed.format;
-    let track = format
-        .default_track()
-        .ok_or_else(|| anyhow!("no audio track"))?;
-    let track_id = track.id;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .context("unsupported codec")?;
-    let mut pcm = Pcm {
-        rate: track.codec_params.sample_rate.unwrap_or(OUTPUT_RATE),
-        channels: 0,
-        samples: Vec::new(),
-    };
-    loop {
-        let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(SymError::IoError(_)) | Err(SymError::ResetRequired) => break,
-            Err(e) => return Err(e.into()),
-        };
-        if packet.track_id() != track_id {
-            continue;
-        }
-        match decoder.decode(&packet) {
-            Ok(buf) => {
-                let spec = *buf.spec();
-                pcm.rate = spec.rate;
-                pcm.channels = spec.channels.count();
-                let mut sb = SampleBuffer::<i16>::new(buf.capacity() as u64, spec);
-                sb.copy_interleaved_ref(buf);
-                pcm.samples.extend_from_slice(sb.samples());
-            }
-            Err(SymError::DecodeError(_)) => continue,
-            Err(e) => return Err(e.into()),
-        }
+    let mut stream = Stream::open(bytes.into())?;
+    let mut pcm = Pcm { rate: OUTPUT_RATE, channels: 0, samples: Vec::new() };
+    while let Some((rate, channels, block)) = stream.next_block()? {
+        pcm.rate = rate;
+        pcm.channels = channels;
+        pcm.samples.extend(block.iter().map(|v| (v * 32767.0).round().clamp(-32768.0, 32767.0) as i16));
     }
     if pcm.channels == 0 {
         return Err(anyhow!("no audio decoded"));
@@ -113,16 +168,6 @@ pub fn to_stereo_44k(pcm: &Pcm) -> Vec<i16> {
         }
     }
     out
-}
-
-/// A variant of 44.1 kHz stereo samples: starting `start_ms` in, panned (-1 left .. 1 right).
-pub fn stereo_variant(samples: &[i16], start_ms: f64, pan: f32) -> Vec<i16> {
-    let start = ((start_ms.max(0.0) * OUTPUT_RATE as f64 / 1000.0) as usize * 2).min(samples.len());
-    let (gl, gr) = (1.0 - pan.max(0.0), 1.0 + pan.min(0.0));
-    samples[start..]
-        .chunks_exact(2)
-        .flat_map(|f| [(f[0] as f32 * gl) as i16, (f[1] as f32 * gr) as i16])
-        .collect()
 }
 
 /// Wrap interleaved 44.1 kHz stereo samples in a WAV container.
@@ -213,6 +258,26 @@ pub fn estimate_duration_ms(bytes: &[u8]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resampler_keeps_length_across_blocks() {
+        let mut r = Resampler::new(44_100);
+        let mut out = Vec::new();
+        let block: Vec<f32> = (0..2205).map(|i| i as f32 / 2205.0).collect(); // 0.1 s mono at 22.05 kHz
+        for _ in 0..10 {
+            r.push(22_050, 1, &block, &mut out);
+        }
+        let frames = out.len() / 2;
+        assert!((frames as i64 - 44_100).abs() <= 2, "{frames} frames for 1 s");
+        assert_eq!(out[0], out[1], "mono goes to both channels");
+    }
+
+    #[test]
+    fn stream_reports_wav_duration() {
+        let pcm = Pcm { rate: 22_050, channels: 1, samples: vec![0; 22_050] };
+        let s = Stream::open(to_wav(&pcm).into()).unwrap();
+        assert!((s.duration_ms().unwrap() - 1000.0).abs() < 1.0);
+    }
 
     #[test]
     fn wav_round_trip_keeps_duration() {

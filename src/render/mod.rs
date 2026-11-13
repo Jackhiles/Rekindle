@@ -1523,7 +1523,7 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
                 if walk_frame >= v.rt.game.frames.len() {
                     break;
                 }
-                eprintln!("walk: frame {walk_frame}, textures {} MB, sounds {} MB", v.textures.bytes >> 20, v.audio.bytes() >> 20);
+                eprintln!("walk: frame {walk_frame}, textures {} MB", v.textures.bytes >> 20);
                 v.load_frame(walk_frame);
                 walk_frame += 1;
                 walk_next = get_time() + ms / 1000.0;
