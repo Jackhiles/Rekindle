@@ -5,9 +5,12 @@
 //! expression 0. Each supported extension maps those indices to behaviour here.
 
 mod clock;
+pub mod ctrlx;
 mod gsx;
 mod inert;
 mod ini;
+mod joystick;
+mod kcarray;
 
 use super::files::SaveFs;
 use super::value::Value;
@@ -24,18 +27,26 @@ pub trait Extension {
 /// State shared by all objects of an extension (per running game).
 pub struct Shared {
     gsx: gsx::Store,
+    /// Keys held this tick (for extensions that test the keyboard).
+    pub keys: ctrlx::Keys,
 }
 
 impl Default for Shared {
     fn default() -> Self {
-        Self { gsx: gsx::new_store() }
+        Self { gsx: gsx::new_store(), keys: Default::default() }
     }
 }
 
-/// Create the native implementation for an extension file name (e.g. "kcini"), if we have one.
-pub fn create(name: &str, shared: &Shared) -> Option<Box<dyn Extension>> {
+/// Create the native implementation for an extension file name (e.g. "kcini"), if we have
+/// one. `data` is the object's stored settings.
+pub fn create(name: &str, data: Option<&[u8]>, shared: &Shared) -> Option<Box<dyn Extension>> {
     match name.to_ascii_lowercase().as_str() {
         "kcini" => Some(Box::new(ini::Ini::default())),
+        "kcarray" => Some(Box::new(kcarray::KcArray::from_data(data))),
+        "ctrlx" => Some(Box::new(ctrlx::ControlX { keys: shared.keys.clone() })),
+        "joystick" => Some(Box::new(joystick::Joypad)),
+        // Japanese text input mode: nothing to do.
+        "controlime" => Some(Box::new(inert::Inert)),
         "gstorex" => Some(Box::new(gsx::GlobalStore::with_store(shared.gsx.clone()))),
         "kcclock" => Some(Box::new(clock::Clock)),
         "kcwctrl" | "drpc" | "hiddenproperties" | "android" | "inappandroid" | "xna" => {

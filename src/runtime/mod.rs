@@ -476,7 +476,11 @@ impl Runtime {
                     .extensions
                     .iter()
                     .find(|e| e.handle as i32 == t as i32 - 32);
-                if let Some(imp) = ext.and_then(|e| ext::create(&e.name, &self.ext_shared)) {
+                let data = match &obj.props {
+                    ObjectProperties::Common(c) => c.extension_data.as_deref(),
+                    _ => None,
+                };
+                if let Some(imp) = ext.and_then(|e| ext::create(&e.name, data, &self.ext_shared)) {
                     self.exts.insert(oi, imp);
                 }
             }
@@ -526,6 +530,11 @@ impl Runtime {
             return;
         }
         self.input_mouse = input.mouse;
+        {
+            let mut keys = self.ext_shared.keys.borrow_mut();
+            keys.clear();
+            keys.extend(input.down.iter().copied());
+        }
         let dt = 1000.0 / self.frame_rate as f64;
         self.audio.update(dt);
         if let Some(t) = &mut self.transition {

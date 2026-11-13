@@ -59,6 +59,12 @@ Extension objects (`.mfx` files) are reimplemented natively in `src/runtime/ext/
   inside the game. Click an edit box and type; lists load / save line files through the save sandbox.
 - **Platform helpers** with no visible effect on PC (window control, Discord status, Android / XNA stubs) are accepted.
 - **Global Store X** (`gstorex`): the integer store, with set / add / subtract / set range / clear, compare, and save / load in its binary file format.
+- **Array** (`kcarray`): numeric or text arrays in up to three dimensions (growing on write), indexes, read / write
+  at X / X,Y / X,Y,Z, clear, and load / save through the save sandbox.
+- **Control X** (`ctrlx`): "key pressed" by key name, for games that let players rebind keys.
+- **Joypad object** (`joystick`): reported as a connected controller with nothing pressed, which keeps such games'
+  keyboard controls working; gamepads still work through Rekindle's own controller support.
+- **ControlIME** (Japanese text input mode) is accepted and does nothing.
 
 Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified.
 

@@ -357,6 +357,18 @@ impl<'a> Eval<'a> {
             (_, 17) => Value::Int(((255 - inst.tint[3] as i32) * 128 / 255).clamp(0, 128)),
             (_, 19) => Value::Str(inst.string(index())),
             (_, 23) => Value::Int(inst.layer as i32 + 1),
+            // Action point of the current image, in frame coordinates.
+            (_, 25) | (_, 26) => {
+                let ap = self.rt.game.object(inst.oi).and_then(|o| inst.current_image(o)).and_then(|h| self.rt.game.images.get(h));
+                let (x, y) = match ap {
+                    Some(e) => (
+                        inst.x + (e.action_point.0 - e.hotspot.0) as f64 * inst.scale_x,
+                        inst.y + (e.action_point.1 - e.hotspot.1) as f64 * inst.scale_y,
+                    ),
+                    None => (inst.x, inst.y),
+                };
+                Value::Int(if t.num == 25 { x } else { y } as i32)
+            }
             (_, 27) => Value::Int(255 - inst.tint[3] as i32),
             (_, 30) => inst.value(a.first().map_or(0, Value::as_i32).max(0) as usize),
             (_, 31) => Value::Str(inst.string(a.first().map_or(0, Value::as_i32).max(0) as usize)),

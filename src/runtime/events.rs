@@ -504,7 +504,7 @@ impl Runtime {
             if block.iter().all(|&(ci, c)| {
                 let r = self.eval_condition(gi, ci, c, &mut sel, input);
                 if trace {
-                    eprintln!("tick {} event #{gi} cond {ci} ({}/{}): {r}", self.tick, c.object_type, c.num);
+                    eprintln!("frame {} tick {} event #{gi} cond {ci} ({}/{}): {r}", self.frame_index, self.tick, c.object_type, c.num);
                 }
                 r
             }) {
@@ -1510,6 +1510,32 @@ impl Runtime {
             (_, 57) => {
                 self.next_z += 1;
                 self.instances[idx].z = self.next_z;
+            }
+            // Move in front of / behind another object.
+            (_, 59) | (_, 60) => {
+                let Some(other) = Self::param_object(a, 0) else { return };
+                let Some(&t) = self.candidates(other, sel).first() else { return };
+                if t == idx {
+                    return;
+                }
+                let tz = self.instances[t].z;
+                // Open a gap next to the target and put the object in it.
+                let (new_z, from) = if a.num == 59 { (tz + 1, tz + 1) } else { (tz, tz) };
+                for (k, inst) in self.instances.iter_mut().enumerate() {
+                    if k != idx && inst.z >= from {
+                        inst.z += 1;
+                    }
+                }
+                self.instances[idx].z = new_z;
+                self.next_z = self.next_z.max(self.instances.iter().map(|i| i.z).max().unwrap_or(0));
+            }
+            // Spread value: alterable value N of the selected objects = start, start + 1, ...
+            (_, 34) => {
+                let i = self.param_index(a, 0, sel, cur);
+                let start = self.eval_param(a, 1, sel, cur).as_i32();
+                let order = self.candidates(a.object_info, sel);
+                let k = order.iter().position(|&j| j == idx).unwrap_or(0) as i32;
+                self.instances[idx].set_value(i, Value::Int(start + k));
             }
             (_, 58) => {
                 self.min_z -= 1;
