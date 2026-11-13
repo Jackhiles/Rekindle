@@ -378,8 +378,8 @@ impl ChunkDecoder {
 
     pub fn decode(&self, chunk: &RawChunk) -> Result<Blob> {
         let r = self.decode_parts(chunk.id, chunk.flags, &chunk.body);
-        // Debug: FUSION_RT_DUMP_CHUNKS=<dir> writes every decoded chunk as <id>_<n>.bin.
-        if let (Some(dir), Ok(b)) = (std::env::var_os("FUSION_RT_DUMP_CHUNKS"), &r) {
+        // Debug: REKINDLE_DUMP_CHUNKS=<dir> writes every decoded chunk as <id>_<n>.bin.
+        if let (Some(dir), Ok(b)) = (std::env::var_os("REKINDLE_DUMP_CHUNKS"), &r) {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static N: AtomicUsize = AtomicUsize::new(0);
             let n = N.fetch_add(1, Ordering::Relaxed);

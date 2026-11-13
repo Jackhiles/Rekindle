@@ -1,7 +1,7 @@
 //! `--dump-info` report.
 
-use fusion_rt::ctf_loader::chunk::chunk_name;
-use fusion_rt::ctf_loader::{GameData, ObjectKind};
+use rekindle::ctf_loader::chunk::chunk_name;
+use rekindle::ctf_loader::{GameData, ObjectKind};
 use std::collections::BTreeMap;
 
 fn count_by<K: Ord, I: IntoIterator<Item = K>>(it: I) -> BTreeMap<K, usize> {
@@ -228,7 +228,7 @@ pub fn print_info(g: &GameData, verbose: bool) {
 
 /// `--dump-events N`: print a frame's event sheet in a compact readable form.
 pub fn print_events(g: &GameData, frame: usize) {
-    use fusion_rt::ctf_loader::events::{Param, TokenValue};
+    use rekindle::ctf_loader::events::{Param, TokenValue};
     let Some(f) = g.frames.get(frame) else {
         println!("no frame {frame}");
         return;
@@ -308,8 +308,8 @@ pub fn print_events(g: &GameData, frame: usize) {
 
 /// `--audit`: look for data the runtime is likely to show differently from the original.
 pub fn print_audit(g: &GameData) {
-    use fusion_rt::ctf_loader::ObjectProperties;
-    use fusion_rt::render::text::find_font_file;
+    use rekindle::ctf_loader::ObjectProperties;
+    use rekindle::render::text::find_font_file;
     use std::collections::{BTreeMap, BTreeSet};
 
     println!("== Audit: {}", g.name);

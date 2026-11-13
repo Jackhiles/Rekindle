@@ -1,4 +1,4 @@
-//! fusion-rt library: a clean-room parser and runtime for Clickteam Fusion 2.5 games.
+//! Rekindle library: a clean-room parser and runtime for Clickteam Fusion games.
 //! Contains no game data; everything is loaded from user-supplied files at runtime.
 
 /// Sound decoding (format-independent PCM / WAV conversion).

@@ -50,9 +50,9 @@ pub fn window_conf(g: &GameData) -> Conf {
     let scale = (1600.0 / w).min(900.0 / h).min(1.0);
     Conf {
         window_title: if g.name.is_empty() {
-            "fusion-rt".into()
+            "Rekindle".into()
         } else {
-            format!("{} - fusion-rt", g.name)
+            format!("{} - Rekindle", g.name)
         },
         window_width: (w * scale) as i32,
         window_height: (h * scale) as i32,
@@ -1024,7 +1024,7 @@ impl Viewer {
                 }
             }
             Visual::Effect { params, .. } => {
-                if std::env::var_os("FUSION_RT_NO_EFFECTS").is_some() {
+                if std::env::var_os("REKINDLE_NO_EFFECTS").is_some() {
                     return;
                 }
                 let Some(off) = &self.offscreen else { return };

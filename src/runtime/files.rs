@@ -23,7 +23,7 @@ fn norm(p: &str) -> String {
     p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
 }
 
-/// Default save folder for a game title: %APPDATA%\fusion-rt\<title> (or ~/.local/share/fusion-rt/<title>).
+/// Default save folder for a game title: %APPDATA%\Rekindle\<title> (or ~/.local/share/Rekindle/<title>).
 pub fn default_save_root(title: &str) -> PathBuf {
     let safe: String = title
         .chars()
@@ -45,7 +45,25 @@ pub fn default_save_root(title: &str) -> PathBuf {
         .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("fusion-rt").join(safe)
+    let root = base.join("Rekindle");
+    migrate_old_saves(&base, &root);
+    let dir = root.join(safe);
+    // Files that had the old names inside a game's folder.
+    for (old, new) in [("fusion-rt.ini", "rekindle.ini"), ("fusion-rt.log", "rekindle.log")] {
+        let (o, n) = (dir.join(old), dir.join(new));
+        if o.is_file() && !n.exists() {
+            let _ = std::fs::rename(o, n);
+        }
+    }
+    dir
+}
+
+/// Saves made before the project was renamed live in `fusion-rt`; move them over once.
+fn migrate_old_saves(base: &Path, root: &Path) {
+    let old = base.join("fusion-rt");
+    if old.is_dir() && !root.exists() {
+        let _ = std::fs::rename(&old, root);
+    }
 }
 
 impl SaveFs {

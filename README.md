@@ -1,4 +1,4 @@
-# fusion-rt
+# Rekindle
 
 A clean-room, open-source runtime for games built with Clickteam Fusion 2.5 and Multimedia Fusion 1.5, written in Rust.
 It works the way ScummVM or OpenMW do: this repository is only the engine. It contains
@@ -60,17 +60,17 @@ Extension objects (`.mfx` files) are reimplemented natively in `src/runtime/ext/
 - **Platform helpers** with no visible effect on PC (window control, Discord status, Android / XNA stubs) are accepted.
 - **Global Store X** (`gstorex`): the integer store, with set / add / subtract / set range / clear, compare, and save / load in its binary file format.
 
-Games write their files through a sandbox. Writes go to `%APPDATA%\fusion-rt\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified.
+Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified.
 
 Anything not implemented yet is counted rather than crashing: see the HUD or `--headless`. Extension objects (`ext:...`) are the most common gap.
 
 ### Display and errors
 - **Fullscreen**: games that ask for fullscreen at start get it; `--fullscreen` / `--windowed` override that, and
-  Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `fusion-rt.ini` in the save folder.
+  Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `rekindle.ini` in the save folder.
 - **Scaling**: the game keeps its aspect ratio (black bars fill the rest). When the picture is scaled, the finished
   frame is upscaled smoothly; F9 switches to sharp pixels (also remembered).
 - **Errors**: if something inside the game logic fails, the tick is skipped, a red notice appears and the details go to
-  `fusion-rt.log` in the save folder; the game pauses after repeated failures. Unsupported features hit during play are
+  `rekindle.log` in the save folder; the game pauses after repeated failures. Unsupported features hit during play are
   logged there too, which makes the file useful for bug reports.
 
 ### Viewer
@@ -104,26 +104,26 @@ dump door              # debug: print objects whose name contains "door"
 sweep 200              # run every frame for 200 ticks
 ```
 
-Run them with `fusion-rt --scenario FILE_OR_DIR`, or as part of `cargo test` by setting
-`FUSION_RT_SCENARIOS` to the folder (without it the game tests are skipped). See `src/runtime/scenario.rs`.
+Run them with `rekindle --scenario FILE_OR_DIR`, or as part of `cargo test` by setting
+`REKINDLE_SCENARIOS` to the folder (without it the game tests are skipped). See `src/runtime/scenario.rs`.
 
-Debug environment variables: `FUSION_RT_PROFILE=1` makes `--headless` print the slowest events;
-`FUSION_RT_NO_EFFECTS=1` disables distortion effects for comparison. `FUSION_RT_TRACE=N` prints each condition result of event N every tick.
+Debug environment variables: `REKINDLE_PROFILE=1` makes `--headless` print the slowest events;
+`REKINDLE_NO_EFFECTS=1` disables distortion effects for comparison. `REKINDLE_TRACE=N` prints each condition result of event N every tick.
 
 ## CLI
 
 ```
-fusion-rt <GAME>                         run the game
+rekindle <GAME>                         run the game
           [--frame N] [--mute] [--save-dir DIR] [--static] [--fit] [--show-hidden] [--hide-layer N]...
           [--screenshot out.png [--ticks N]]   render (after N ticks) to a PNG and exit
-fusion-rt <GAME> --headless N [--press TICK:VK]...   simulate N ticks without a window
-fusion-rt <GAME> --sweep N               run every frame N ticks and list unsupported features
-fusion-rt <GAME> --dump-events N         print frame N's event sheet
-fusion-rt --scenario FILE_OR_DIR         run regression scenarios
-fusion-rt <GAME> --screenshot DIR --script FILE   play a scripted input file, saving a PNG at each `shot TICK name.png`
-fusion-rt <GAME> --fullscreen / --windowed       start fullscreen or in a window
-fusion-rt <GAME> --dump-info [-v]
-fusion-rt <GAME> --extract DIR
+rekindle <GAME> --headless N [--press TICK:VK]...   simulate N ticks without a window
+rekindle <GAME> --sweep N               run every frame N ticks and list unsupported features
+rekindle <GAME> --dump-events N         print frame N's event sheet
+rekindle --scenario FILE_OR_DIR         run regression scenarios
+rekindle <GAME> --screenshot DIR --script FILE   play a scripted input file, saving a PNG at each `shot TICK name.png`
+rekindle <GAME> --fullscreen / --windowed       start fullscreen or in a window
+rekindle <GAME> --dump-info [-v]
+rekindle <GAME> --extract DIR
 ```
 - `--headless` prints frame changes and the unimplemented features that were hit. `--press 50:13` presses Enter (VK 13) at tick 50.
 - `--dump-info`: summary of the application, assets, objects and frames. Add `-v` to also list every object, layer, chunk and warning.

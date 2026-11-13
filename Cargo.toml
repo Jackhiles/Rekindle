@@ -1,5 +1,5 @@
 [package]
-name = "fusion-rt"
+name = "rekindle"
 version = "0.1.0"
 edition = "2021"
 description = "Clean-room, open-source runtime for Clickteam Fusion 2.5 game data (bring your own game files)"
@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [[bin]]
-name = "fusion-rt"
+name = "rekindle"
 path = "src/main.rs"
 
 [dependencies]

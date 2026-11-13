@@ -421,8 +421,8 @@ impl Runtime {
             }
         }
         let mut chosen: Option<Sel> = None;
-        // Debug: FUSION_RT_TRACE=<event number> prints each condition's result.
-        let trace = std::env::var("FUSION_RT_TRACE").ok().and_then(|v| v.parse::<usize>().ok()) == Some(gi);
+        // Debug: REKINDLE_TRACE=<event number> prints each condition's result.
+        let trace = std::env::var("REKINDLE_TRACE").ok().and_then(|v| v.parse::<usize>().ok()) == Some(gi);
         for block in &blocks {
             let mut sel = Sel::new();
             if block.iter().all(|&(ci, c)| {

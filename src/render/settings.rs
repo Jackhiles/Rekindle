@@ -1,4 +1,4 @@
-//! Per-game player settings (`fusion-rt.ini` in the game's save folder).
+//! Per-game player settings (`rekindle.ini` in the game's save folder).
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn load(dir: &Path) -> Self {
-        let path = dir.join("fusion-rt.ini");
+        let path = dir.join("rekindle.ini");
         let mut s = Self { fullscreen: None, smooth: true, path };
         if let Ok(text) = std::fs::read_to_string(&s.path) {
             for line in text.lines() {
@@ -30,7 +30,7 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        let mut text = String::from("[fusion-rt]\n");
+        let mut text = String::from("[rekindle]\n");
         if let Some(f) = self.fullscreen {
             text += &format!("fullscreen={}\n", f as u8);
         }
@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let dir = std::env::temp_dir().join(format!("fusion-rt-settings-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rekindle-settings-{}", std::process::id()));
         let mut s = Settings::load(&dir);
         assert_eq!(s.fullscreen, None);
         assert!(s.smooth);

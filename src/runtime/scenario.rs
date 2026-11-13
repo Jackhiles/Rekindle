@@ -79,7 +79,7 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
     let mut result = ScenarioResult { name, failures: Vec::new(), log: Vec::new() };
     let mut driver: Option<Driver> = None;
     let mut start_frame = 0usize;
-    let save_root = std::env::temp_dir().join(format!("fusion-rt-scenario-{}-{}", result.name, std::process::id()));
+    let save_root = std::env::temp_dir().join(format!("rekindle-scenario-{}-{}", result.name, std::process::id()));
     let _ = std::fs::remove_dir_all(&save_root);
 
     for (lineno, raw) in text.lines().enumerate() {

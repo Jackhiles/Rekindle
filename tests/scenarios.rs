@@ -1,13 +1,13 @@
-//! Runs every scenario (`*.scn`) in the folder named by `FUSION_RT_SCENARIOS`.
+//! Runs every scenario (`*.scn`) in the folder named by `REKINDLE_SCENARIOS`.
 //! Game files are never part of this repository, so without that variable the test is skipped.
 
-use fusion_rt::runtime::scenario::{find_scenarios, run_scenario};
+use rekindle::runtime::scenario::{find_scenarios, run_scenario};
 use std::path::PathBuf;
 
 #[test]
 fn game_scenarios() {
-    let Some(dir) = std::env::var_os("FUSION_RT_SCENARIOS").map(PathBuf::from) else {
-        eprintln!("FUSION_RT_SCENARIOS not set: skipping game scenarios");
+    let Some(dir) = std::env::var_os("REKINDLE_SCENARIOS").map(PathBuf::from) else {
+        eprintln!("REKINDLE_SCENARIOS not set: skipping game scenarios");
         return;
     };
     let files = find_scenarios(&dir);

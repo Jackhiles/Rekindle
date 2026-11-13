@@ -402,7 +402,7 @@ mod tests {
     use super::*;
 
     fn fs() -> SaveFs {
-        let root = std::env::temp_dir().join("fusion-rt-widget-test");
+        let root = std::env::temp_dir().join("rekindle-widget-test");
         SaveFs::new(&root.join("game.exe"), root.join("saves"))
     }
 

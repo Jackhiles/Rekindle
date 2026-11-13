@@ -1,10 +1,10 @@
-//! fusion-rt: a clean-room, open-source runtime for Clickteam Fusion 2.5 games.
+//! Rekindle: a clean-room, open-source runtime for Clickteam Fusion games.
 //!
 //! This binary contains no game data. Point it at a game you own:
 //!     cargo run --release -- path/to/game.exe              (open the frame viewer)
 //!     cargo run --release -- path/to/game.exe --dump-info  (print a summary)
 
-use fusion_rt::{ctf_loader, render, runtime};
+use rekindle::{ctf_loader, render, runtime};
 mod dump;
 mod extract;
 
@@ -63,7 +63,7 @@ struct Cli {
     #[arg(long = "static")]
     static_view: bool,
 
-    /// Folder for the game's save files (default: %APPDATA%\\fusion-rt\\<game>).
+    /// Folder for the game's save files (default: %APPDATA%\\Rekindle\\<game>).
     #[arg(long, value_name = "DIR")]
     save_dir: Option<PathBuf>,
 
@@ -111,7 +111,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    fusion_rt::log::install_panic_hook();
+    rekindle::log::install_panic_hook();
     if let Some(target) = &cli.scenario {
         return run_scenarios(target);
     }
@@ -168,7 +168,7 @@ fn main() -> Result<()> {
         save_dir: cli.save_dir.or_else(|| {
             cli.screenshot
                 .as_ref()
-                .map(|_| std::env::temp_dir().join(format!("fusion-rt-test-{}", std::process::id())))
+                .map(|_| std::env::temp_dir().join(format!("rekindle-test-{}", std::process::id())))
         }),
         fullscreen: if cli.fullscreen {
             Some(true)
@@ -258,7 +258,7 @@ fn run_headless(
 /// Compatibility sweep: every frame, N ticks each, then the unsupported features hit overall.
 fn run_sweep(game: ctf_loader::GameData, ticks: u64, save_dir: Option<PathBuf>) {
     let frames = game.frames.len();
-    let save_dir = save_dir.unwrap_or_else(|| std::env::temp_dir().join("fusion-rt-sweep"));
+    let save_dir = save_dir.unwrap_or_else(|| std::env::temp_dir().join("rekindle-sweep"));
     let mut rt = runtime::Runtime::with_save_root(game, 0, Some(save_dir));
     let t = Instant::now();
     for f in 0..frames {
@@ -290,7 +290,7 @@ fn run_sweep(game: ctf_loader::GameData, ticks: u64, save_dir: Option<PathBuf>) 
 }
 
 fn run_scenarios(target: &std::path::Path) -> Result<()> {
-    use fusion_rt::runtime::scenario::{find_scenarios, run_scenario};
+    use rekindle::runtime::scenario::{find_scenarios, run_scenario};
     let files = if target.is_dir() { find_scenarios(target) } else { vec![target.to_path_buf()] };
     let mut failed = 0;
     for f in &files {

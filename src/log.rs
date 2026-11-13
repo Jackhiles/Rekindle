@@ -1,4 +1,4 @@
-//! A plain-text log next to the game's saves (`fusion-rt.log`), so problems can be
+//! A plain-text log next to the game's saves (`rekindle.log`), so problems can be
 //! reported even when the program was started without a console.
 
 use std::fs::{File, OpenOptions};
@@ -32,10 +32,10 @@ pub struct Log {
 }
 
 impl Log {
-    /// Open (append to) `fusion-rt.log` in `dir`. Logging is silently disabled if the
+    /// Open (append to) `rekindle.log` in `dir`. Logging is silently disabled if the
     /// file can't be created.
     pub fn open(dir: &Path) -> Self {
-        let path = dir.join("fusion-rt.log");
+        let path = dir.join("rekindle.log");
         let file = std::fs::create_dir_all(dir)
             .ok()
             .and_then(|_| OpenOptions::new().create(true).append(true).open(&path).ok());

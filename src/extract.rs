@@ -1,7 +1,7 @@
 //! `--extract DIR`: write decoded images as PNG and sounds in their native format.
 
 use anyhow::{Context, Result};
-use fusion_rt::ctf_loader::{GameData, RgbaImage};
+use rekindle::ctf_loader::{GameData, RgbaImage};
 use std::fs;
 use std::io::BufWriter;
 use std::path::Path;
