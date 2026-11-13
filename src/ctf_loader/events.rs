@@ -208,13 +208,27 @@ pub struct Events {
 
 /// `old`: Multimedia Fusion 1.5 layout (byte-sized object types / numbers).
 pub fn parse_events(data: &[u8], unicode: bool, old: bool) -> Result<Events> {
-    let Some(start) = data.windows(4).position(|w| w == b"ERev") else {
+    let Some(mut start) = data.windows(4).position(|w| w == b"ERev") else {
         return Ok(Events::default());
     };
+    // Large event sheets are stored as several "ERev" blocks one after another.
+    let mut all = Events::default();
+    loop {
+        let size = u32::from_le_bytes(data.get(start + 4..start + 8).and_then(|b| b.try_into().ok()).unwrap_or([0; 4])) as usize;
+        let block_end = (start + 8 + size).min(data.len());
+        all.groups.extend(parse_event_block(data, start + 8, block_end, unicode, old)?.groups);
+        if data.get(block_end..block_end + 4) != Some(b"ERev".as_slice()) {
+            break;
+        }
+        start = block_end;
+    }
+    Ok(all)
+}
+
+/// One "ERev" block: event groups in `pos..end`.
+fn parse_event_block(data: &[u8], pos: usize, end: usize, unicode: bool, old: bool) -> Result<Events> {
     let mut r = ByteReader::new(data);
-    r.seek(start + 4)?;
-    let size = r.read_u32()? as usize;
-    let end = (r.pos() + size).min(data.len());
+    r.seek(pos)?;
     let mut groups = Vec::new();
     if !old && is_compact(data, r.pos(), end) {
         return parse_compact_groups(data, r.pos(), end, unicode);
