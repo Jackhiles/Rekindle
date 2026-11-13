@@ -568,6 +568,12 @@ impl Runtime {
             inst.update_animation(obj);
         }
 
+        // Animations that just ended trigger their "animation is over" events.
+        if self.instances.iter().any(|i| i.anim.finished_anim.is_some() && !i.destroyed) {
+            self.triggered_pass = events::Trigger::AnimationEnd;
+            self.run_events(input, None);
+            self.triggered_pass = events::Trigger::None;
+        }
         // Triggered input events run as the input arrives, i.e. before the main pass.
         let any_input = !input.pressed.is_empty()
             || input.clicked.iter().any(|&c| c)

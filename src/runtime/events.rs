@@ -658,12 +658,17 @@ impl Runtime {
             }
             (MOUSE, -3) => self.mouse_in_zone(c, 0, input),
             // Like collisions, mouse tests also hit hidden objects (games use invisible hover zones).
+            // "Mouse over object" belongs to the mouse, so NOT means "over none of them"
+            // (not "some instance isn't under it"); negated, the selection is left alone.
             (MOUSE, -4) => {
                 let Some(oi) = Self::param_object(c, 0) else {
                     return false;
                 };
                 let (mx, my) = input.mouse;
-                return self.filter(oi, sel, neg, |rt, _, i| {
+                if neg {
+                    return !self.candidates(oi, sel).into_iter().any(|i| self.point_in(i, mx, my));
+                }
+                return self.filter(oi, sel, false, |rt, _, i| {
                     rt.point_in(i, mx, my)
                 });
             }
@@ -684,7 +689,10 @@ impl Runtime {
                     return false;
                 };
                 let (mx, my) = input.mouse;
-                return self.filter(oi, sel, neg, |rt, _, i| {
+                if neg {
+                    return !self.candidates(oi, sel).into_iter().any(|i| self.point_in(i, mx, my));
+                }
+                return self.filter(oi, sel, false, |rt, _, i| {
                     rt.point_in(i, mx, my)
                 });
             }
@@ -1746,6 +1754,8 @@ fn trigger_kind(group: &EventGroup) -> Trigger {
         Some(c) if c.negated() => Trigger::None,
         Some(c) if c.object_type == MOUSE && matches!(c.num, -1 | -5 | -6 | -7 | -9) => Trigger::Input,
         Some(c) if c.object_type == GAME && c.num == -1 => Trigger::StartOfFrame,
+        // "Animation N is over" fires when the animation ends, before the main pass.
+        Some(c) if c.object_type >= 0 && c.num == -2 => Trigger::AnimationEnd,
         _ => Trigger::None,
     }
 }
@@ -1757,6 +1767,7 @@ pub(super) enum Trigger {
     None,
     StartOfFrame,
     Input,
+    AnimationEnd,
 }
 
 #[cfg(test)]
