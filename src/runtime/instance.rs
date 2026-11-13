@@ -387,7 +387,8 @@ impl Instance {
 
     /// Advance the object's movement by one tick.
     /// `screen_mouse`: the mouse position in the window (game pixels), for mouse movement.
-    pub fn update_movement(&mut self, obj: &ObjectInfo, input: &Input, controls: &PlayerControls, screen_mouse: (f64, f64)) {
+    /// `controls`: the four players' controls (a movement follows its own player's).
+    pub fn update_movement(&mut self, obj: &ObjectInfo, input: &Input, controls: &[PlayerControls; 4], screen_mouse: (f64, f64)) {
         let ObjectProperties::Common(c) = &obj.props else {
             return;
         };
@@ -408,7 +409,8 @@ impl Instance {
                 if self.movement.stopped {
                     return;
                 }
-                let k = &controls.keys;
+                // Movements are numbered by player 1-4 (0 in older files means player 1).
+                let k = &controls[(m.player.max(1) as usize - 1).min(3)].keys;
                 let dx = input.down.contains(&k[3]) as i32 - input.down.contains(&k[2]) as i32;
                 let dy = input.down.contains(&k[1]) as i32 - input.down.contains(&k[0]) as i32;
                 if dx == 0 && dy == 0 {
