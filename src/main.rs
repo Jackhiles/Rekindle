@@ -19,9 +19,17 @@ use std::time::Instant;
     about = "Clean-room Clickteam Fusion 2.5 runtime (bring your own game files)"
 )]
 struct Cli {
-    /// Path to a Fusion game: a built .exe or a .ccn data file.
-    #[arg(required_unless_present = "scenario")]
+    /// Path to a Fusion game: a built .exe or a .ccn / .dat data file.
+    /// Without one, the game library (launcher) opens.
     game: Option<PathBuf>,
+
+    /// Add a game file, or every Fusion game in a folder, to the launcher's library; repeatable.
+    #[arg(long, value_name = "FILE|DIR")]
+    add: Vec<PathBuf>,
+
+    /// Create a desktop shortcut that starts GAME with Rekindle, then exit.
+    #[arg(long, requires = "game")]
+    shortcut: bool,
 
     /// Print a summary of the parsed application, frames, objects and assets (no window).
     #[arg(long)]
@@ -115,7 +123,37 @@ fn main() -> Result<()> {
     if let Some(target) = &cli.scenario {
         return run_scenarios(target);
     }
-    let game_path = cli.game.clone().expect("required by clap");
+    if !cli.add.is_empty() {
+        use rekindle::launcher::library;
+        let mut lib = library::load();
+        for p in &cli.add {
+            let files = if p.is_dir() { library::find_games(p) } else { vec![p.clone()] };
+            for f in files {
+                let f = std::path::absolute(&f).unwrap_or(f);
+                if let Some(e) = library::inspect(&f) {
+                    let title = e.title.clone();
+                    if library::add(&mut lib, e) {
+                        println!("added {title} ({})", f.display());
+                    }
+                }
+            }
+        }
+        library::save(&lib);
+        return Ok(());
+    }
+    let Some(game_path) = cli.game.clone() else {
+        macroquad::Window::from_config(rekindle::launcher::window_conf(), rekindle::launcher::run());
+        return Ok(());
+    };
+    if cli.shortcut {
+        let entry = rekindle::launcher::library::inspect(&game_path)
+            .ok_or_else(|| anyhow::anyhow!("{} is not a Fusion game", game_path.display()))?;
+        match rekindle::launcher::library::create_shortcut(&entry.path, &entry.title) {
+            Ok(p) => println!("Created {}", p.display()),
+            Err(e) => anyhow::bail!("could not create the shortcut: {e}"),
+        }
+        return Ok(());
+    }
     let t = Instant::now();
     let game = ctf_loader::GameData::load(&game_path)?;
     eprintln!("Loaded {} in {:.2?}", game_path.display(), t.elapsed());
@@ -165,6 +203,7 @@ fn main() -> Result<()> {
         screenshot_ticks: cli.ticks,
         mute: cli.mute,
         // Screenshot / scripted runs are tests: keep them away from the player's saves.
+        game_path: Some(game_path.clone()),
         save_dir: cli.save_dir.or_else(|| {
             cli.screenshot
                 .as_ref()

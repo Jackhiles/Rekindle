@@ -18,6 +18,7 @@ png = "0.17"
 macroquad = { version = "0.4", features = ["audio"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 memmap2 = "0.9"
+rfd = "0.15"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm", "adpcm", "ogg", "vorbis"] }
 
 [profile.dev]

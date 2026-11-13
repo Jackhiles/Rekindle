@@ -5,6 +5,8 @@
 pub mod audio;
 /// Format parser. Has no rendering dependencies.
 pub mod ctf_loader;
+/// The game library / launcher shown when no game is given.
+pub mod launcher;
 /// Log file next to the saves, and panic capture.
 pub mod log;
 /// Macroquad-based frame viewer.

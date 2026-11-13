@@ -39,6 +39,8 @@ pub struct ViewerOptions {
     pub mute: bool,
     /// Where game save files go (None = default per-game folder).
     pub save_dir: Option<std::path::PathBuf>,
+    /// The file the player opened (an .exe even if its data is a .dat); play time is logged under it.
+    pub game_path: Option<PathBuf>,
     /// Force fullscreen (true) or windowed (false); None = saved choice, else the game's setting.
     pub fullscreen: Option<bool>,
 }
@@ -1319,9 +1321,17 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         return;
     }
 
+    // Closing the window ends the loop (instead of exiting at once) so the session is logged.
+    prevent_quit();
+    let started = chrono::Local::now();
+    let clock = std::time::Instant::now();
     loop {
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
-        if ctrl && is_key_pressed(KeyCode::Q) {
+        if (ctrl && is_key_pressed(KeyCode::Q)) || is_quit_requested() {
+            break;
+        }
+        // The game's own "end application" closes the window, as in the original runtime.
+        if v.rt.finished && v.running {
             break;
         }
         v.handle_debug_keys();
@@ -1332,6 +1342,15 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         v.draw();
         next_frame().await;
     }
+    let secs = clock.elapsed().as_secs();
+    let path = opts.game_path.clone().unwrap_or_else(|| v.rt.game.path.clone());
+    let title = if v.rt.game.name.trim().is_empty() {
+        path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    } else {
+        v.rt.game.name.trim().to_string()
+    };
+    crate::launcher::playlog::record(&path, &title, started, secs);
+    v.log.line(&format!("session ended after {}", crate::launcher::playlog::duration(secs)));
 }
 
 /// Draw an edit box / list / button / combo box at screen position `p`.

@@ -64,6 +64,16 @@ Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<gam
 
 Anything not implemented yet is counted rather than crashing: see the HUD or `--headless`. Extension objects (`ext:...`) are the most common gap.
 
+### Launcher
+Run `rekindle` without a game to open the launcher. "Add game..." picks a game file and "Add folder..." finds every Fusion
+game in a folder (also from the command line: `rekindle --add FILE_OR_FOLDER`). Each game has **Play**, **Desktop
+shortcut** (a shortcut that starts the game with Rekindle, using the game's own icon; also `rekindle GAME --shortcut`)
+and **X** (removes it from the library; the files are untouched). Double-click a game to play it.
+
+Play time is logged per session in `%APPDATA%\Rekindle\playtime.tsv`; the launcher shows each game's total and last
+play, and **Play log** lists every session. **Open folder** opens the Rekindle folder with saves, the play log and each
+game's `rekindle.log`. A game's own "end application" action closes its window.
+
 ### Display and errors
 - **Fullscreen**: games that ask for fullscreen at start get it; `--fullscreen` / `--windowed` override that, and
   Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `rekindle.ini` in the save folder.

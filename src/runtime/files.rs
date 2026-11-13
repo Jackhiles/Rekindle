@@ -40,14 +40,7 @@ pub fn default_save_root(title: &str) -> PathBuf {
     } else {
         safe.trim().to_string()
     };
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let root = base.join("Rekindle");
-    migrate_old_saves(&base, &root);
-    let dir = root.join(safe);
+    let dir = data_root().join(safe);
     // Files that had the old names inside a game's folder.
     for (old, new) in [("fusion-rt.ini", "rekindle.ini"), ("fusion-rt.log", "rekindle.log")] {
         let (o, n) = (dir.join(old), dir.join(new));
@@ -56,6 +49,18 @@ pub fn default_save_root(title: &str) -> PathBuf {
         }
     }
     dir
+}
+
+/// `%APPDATA%\Rekindle` (or the platform's data folder): saves, settings and the launcher library.
+pub fn data_root() -> PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let root = base.join("Rekindle");
+    migrate_old_saves(&base, &root);
+    root
 }
 
 /// Saves made before the project was renamed live in `fusion-rt`; move them over once.
