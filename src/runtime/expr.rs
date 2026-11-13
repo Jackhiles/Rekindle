@@ -290,8 +290,8 @@ impl<'a> Eval<'a> {
                 _ => Value::Int(0),
             },
             -7 => match t.num {
-                0 => Value::Int(rt.score[0]),
-                1 => Value::Int(rt.lives[0]),
+                0 => Value::Int(rt.score[super::events::player_index(t.object_info)]),
+                1 => Value::Int(rt.lives[super::events::player_index(t.object_info)]),
                 _ => Value::Int(0),
             },
             ot if ot >= 2 => self.object_expr(t, a),

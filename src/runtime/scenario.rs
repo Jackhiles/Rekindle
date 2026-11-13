@@ -151,6 +151,17 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                                 d.tick, obj.name, obj.flags, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
                                 inst.anim.anim, inst.anim.frame, inst.values.iter().take(6).map(|v| v.to_string()).collect::<Vec<_>>(), inst.counter, d.last_mouse, d.rt.scroll
                             ));
+                            if !inst.background {
+                                if let Some(o) = d.rt.obstacle_hit(i, true) {
+                                    let b = &d.rt.instances[o];
+                                    let name = d.rt.game.object(b.oi).map_or("?", |x| x.name.as_str());
+                                    result.log.push(format!(
+                                        "    overlaps obstacle \"{name}\" (type {}) box {:?}",
+                                        b.obstacle,
+                                        d.rt.bounds_of(o)
+                                    ));
+                                }
+                            }
                             if let crate::ctf_loader::ObjectProperties::Common(c) = &obj.props {
                                 if let Some(data) = &c.extension_data {
                                     let hex: Vec<String> = data.iter().take(96).map(|b| format!("{b:02x}")).collect();

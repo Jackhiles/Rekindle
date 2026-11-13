@@ -105,7 +105,7 @@ Run them with `fusion-rt --scenario FILE_OR_DIR`, or as part of `cargo test` by 
 `FUSION_RT_SCENARIOS` to the folder (without it the game tests are skipped). See `src/runtime/scenario.rs`.
 
 Debug environment variables: `FUSION_RT_PROFILE=1` makes `--headless` print the slowest events;
-`FUSION_RT_NO_EFFECTS=1` disables distortion effects for comparison.
+`FUSION_RT_NO_EFFECTS=1` disables distortion effects for comparison. `FUSION_RT_TRACE=N` prints each condition result of event N every tick.
 
 ## CLI
 

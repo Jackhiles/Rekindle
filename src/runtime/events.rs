@@ -408,12 +408,17 @@ impl Runtime {
             }
         }
         let mut chosen: Option<Sel> = None;
+        // Debug: FUSION_RT_TRACE=<event number> prints each condition's result.
+        let trace = std::env::var("FUSION_RT_TRACE").ok().and_then(|v| v.parse::<usize>().ok()) == Some(gi);
         for block in &blocks {
             let mut sel = Sel::new();
-            if block
-                .iter()
-                .all(|&(ci, c)| self.eval_condition(gi, ci, c, &mut sel, input))
-            {
+            if block.iter().all(|&(ci, c)| {
+                let r = self.eval_condition(gi, ci, c, &mut sel, input);
+                if trace {
+                    eprintln!("tick {} event #{gi} cond {ci} ({}/{}): {r}", self.tick, c.object_type, c.num);
+                }
+                r
+            }) {
                 chosen = Some(sel);
                 break;
             }
@@ -607,11 +612,11 @@ impl Runtime {
             }
             (PLAYER, -2) => {
                 let (cmp, rhs) = self.param_cmp(c, 0, sel, None);
-                Value::Int(self.score[0]).compare(cmp, &rhs)
+                Value::Int(self.score[player_index(c.object_info)]).compare(cmp, &rhs)
             }
             (PLAYER, -3) => {
                 let (cmp, rhs) = self.param_cmp(c, 0, sel, None);
-                Value::Int(self.lives[0]).compare(cmp, &rhs)
+                Value::Int(self.lives[player_index(c.object_info)]).compare(cmp, &rhs)
             }
             (SOUND, -1) => {
                 Self::param_sample(c, 0).is_none_or(|h| !self.audio.is_sample_playing(h))
@@ -1005,18 +1010,20 @@ impl Runtime {
             (MOUSE, 1) => self.cursor_visible = true,
             (PLAYER, n @ (0 | 4 | 6)) => {
                 let v = self.eval_param(a, 0, sel, None).as_i32();
-                self.score[0] = match n {
+                let p = player_index(a.object_info);
+                self.score[p] = match n {
                     0 => v,
-                    4 => self.score[0] + v,
-                    _ => self.score[0] - v,
+                    4 => self.score[p] + v,
+                    _ => self.score[p] - v,
                 };
             }
             (PLAYER, n @ (1 | 5 | 7)) => {
                 let v = self.eval_param(a, 0, sel, None).as_i32();
-                self.lives[0] = match n {
+                let p = player_index(a.object_info);
+                self.lives[p] = match n {
                     1 => v,
-                    5 => self.lives[0] + v,
-                    _ => self.lives[0] - v,
+                    5 => self.lives[p] + v,
+                    _ => self.lives[p] - v,
                 };
             }
             (PLAYER, 2) | (PLAYER, 3) => {}
@@ -1533,6 +1540,16 @@ impl Runtime {
             None
         };
         Some((ox + dx, oy + dy, layer, dir))
+    }
+}
+
+/// Player-object conditions, actions and expressions keep the player number (0-3) in
+/// their object field.
+pub(super) fn player_index(object_info: u16) -> usize {
+    if object_info < 4 {
+        object_info as usize
+    } else {
+        0
     }
 }
 
