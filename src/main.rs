@@ -39,6 +39,11 @@ struct Cli {
     #[arg(long, requires = "game")]
     shortcut: bool,
 
+    /// Add GAME to Steam as a shortcut that starts it with Rekindle (with the game's Steam
+    /// artwork if it has any), then exit. Steam is closed and restarted if it's running.
+    #[arg(long, requires = "game")]
+    add_to_steam: bool,
+
     /// Print a summary of the parsed application, frames, objects and assets (no window).
     #[arg(long)]
     dump_info: bool,
@@ -177,6 +182,15 @@ fn main() -> Result<()> {
         macroquad::Window::from_config(rekindle::launcher::window_conf(), rekindle::launcher::run());
         return Ok(());
     };
+    if cli.add_to_steam {
+        let entry = rekindle::launcher::library::inspect(&game_path)
+            .ok_or_else(|| anyhow::anyhow!("{} is not a Fusion game", game_path.display()))?;
+        match rekindle::launcher::steam_shortcuts::add_game(&entry.path, &entry.title, true, |s| println!("{s}")) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => anyhow::bail!("could not add it to Steam: {e}"),
+        }
+        return Ok(());
+    }
     if cli.shortcut {
         let entry = rekindle::launcher::library::inspect(&game_path)
             .ok_or_else(|| anyhow::anyhow!("{} is not a Fusion game", game_path.display()))?;
@@ -265,6 +279,12 @@ fn main() -> Result<()> {
             None => None,
         },
     };
+    // A real play session (not a test capture / scripted run): one copy per game.
+    let test_run = opts.screenshot.is_some() || opts.script.is_some() || std::env::var_os("REKINDLE_WALK_FRAMES").is_some();
+    if !test_run && !render::claim_single_instance(&game_path) {
+        eprintln!("{} is already running.", game_path.display());
+        return Ok(());
+    }
     let conf = render::window_conf(&game, &opts.settings);
     macroquad::Window::from_config(conf, render::run(game, opts));
     Ok(())

@@ -1398,6 +1398,31 @@ fn draw_gradient(p: Vec2, size: Vec2, from: [u8; 4], to: [u8; 4], vertical: bool
 }
 
 /// Run the game (or take a screenshot). Call from inside a Macroquad window.
+/// Make sure only one copy of a game runs at a time: takes a lock for `game_path` that
+/// is held until the process exits. Returns false when another copy already holds it.
+pub fn claim_single_instance(game_path: &std::path::Path) -> bool {
+    let canon = std::fs::canonicalize(game_path).unwrap_or_else(|_| game_path.to_path_buf());
+    let key = canon.to_string_lossy();
+    let key = if cfg!(windows) { key.to_lowercase() } else { key.into_owned() };
+    let mut crc = flate2::Crc::new();
+    crc.update(key.as_bytes());
+    let dir = crate::runtime::files::data_root().join("running");
+    let _ = std::fs::create_dir_all(&dir);
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("{:08x}.lock", crc.sum())))
+    else {
+        return true; // can't tell; don't stop the game over it
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            // Released by the OS when the process ends.
+            std::mem::forget(file);
+            true
+        }
+        Err(std::fs::TryLockError::WouldBlock) => false,
+        Err(_) => true,
+    }
+}
+
 pub async fn run(game: GameData, opts: ViewerOptions) {
     if game.frames.is_empty() {
         eprintln!("game has no frames to display");

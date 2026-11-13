@@ -3,6 +3,7 @@
 
 pub mod library;
 pub mod steam;
+pub mod steam_shortcuts;
 pub mod update;
 
 /// File / folder pickers.
@@ -197,6 +198,14 @@ struct Launcher {
     pad_held: std::collections::HashSet<gilrs::Button>,
     selected: Option<usize>,
     pad_back: bool,
+    pad_a: bool,
+    /// Games started from here that are still running. While one is, the controller
+    /// belongs to the game (gilrs sees it even when this window is in the background).
+    running: Vec<(PathBuf, std::process::Child)>,
+    /// Steam is installed (offer "Add to Steam").
+    has_steam: bool,
+    /// Asking to restart Steam before adding this library entry to it.
+    steam_confirm: Option<usize>,
 }
 
 impl Launcher {
@@ -231,6 +240,10 @@ impl Launcher {
             pad_held: Default::default(),
             selected: None,
             pad_back: false,
+            pad_a: false,
+            running: Vec::new(),
+            has_steam: !steam::steam_roots().is_empty(),
+            steam_confirm: None,
         }
     }
 
@@ -239,6 +252,9 @@ impl Launcher {
     fn pad_nav(&mut self) -> Option<(usize, u8)> {
         use gilrs::{Axis, Button};
         self.pad_back = false;
+        self.pad_a = false;
+        self.running.retain_mut(|(_, c)| matches!(c.try_wait(), Ok(None)));
+        let game_running = !self.running.is_empty();
         let g = self.pad.as_mut()?;
         while g.next_event().is_some() {}
         let (_, p) = g.gamepads().find(|(_, p)| p.is_connected())?;
@@ -255,6 +271,12 @@ impl Launcher {
         if ly < -0.6 {
             now.insert(Button::DPadDown);
         }
+        if game_running {
+            // Buttons pressed in the game are not for the launcher; also don't act on them
+            // when the game closes while they're still held.
+            self.pad_held = now;
+            return None;
+        }
         let pressed = |b: Button| now.contains(&b) && !self.pad_held.contains(&b);
         let (up, down, a, b, y) = (
             pressed(Button::DPadUp),
@@ -265,7 +287,8 @@ impl Launcher {
         );
         self.pad_held = now;
         self.pad_back = b;
-        if self.entries.is_empty() || self.settings_panel.is_some() || self.show_log || self.steam_panel {
+        self.pad_a = a;
+        if self.entries.is_empty() || self.settings_panel.is_some() || self.show_log || self.steam_panel || self.steam_confirm.is_some() {
             if b && self.show_log {
                 self.show_log = false;
             }
@@ -475,10 +498,19 @@ impl Launcher {
         });
     }
 
+    fn is_running(&mut self, path: &Path) -> bool {
+        self.running.retain_mut(|(_, c)| matches!(c.try_wait(), Ok(None)));
+        self.running.iter().any(|(p, _)| p == path)
+    }
+
     fn play(&mut self, i: usize) {
-        let e = &self.entries[i];
+        let e = self.entries[i].clone();
         if !e.path.is_file() {
             self.say(format!("Can't find {} any more.", e.path.display()));
+            return;
+        }
+        if self.is_running(&e.path) {
+            self.say(format!("{} is already running.", e.title));
             return;
         }
         match update::program_path().and_then(|exe| {
@@ -487,7 +519,10 @@ impl Launcher {
                 .current_dir(e.path.parent().unwrap_or(Path::new(".")))
                 .spawn()
         }) {
-            Ok(_) => self.say(format!("Starting {}...", e.title)),
+            Ok(child) => {
+                self.running.push((e.path.clone(), child));
+                self.say(format!("Starting {}...", e.title));
+            }
             Err(err) => self.say(format!("Could not start the game: {err}")),
         }
     }
@@ -577,6 +612,14 @@ impl Launcher {
         // Game list (or the play log).
         let top = HEADER_H;
         let bottom = sh - STATUS_H;
+        // Read the controller every frame (panels use B / A from it too).
+        let pad_action = self.pad_nav();
+        if let Some(i) = self.steam_confirm {
+            self.draw_steam_confirm(top, i);
+            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
+            self.draw_status(sh);
+            return;
+        }
         if self.steam_panel {
             self.draw_steam_panel(top);
             draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
@@ -604,7 +647,7 @@ impl Launcher {
             self.text(msg, (sw - w) / 2.0, sh / 2.0, 18, MUTED);
         }
         let mouse = Vec2::from(mouse_position());
-        let mut action: Option<(usize, u8)> = self.pad_nav();
+        let mut action: Option<(usize, u8)> = pad_action;
         for i in 0..self.entries.len() {
             let y = top + i as f32 * ROW_H - self.scroll;
             if y + ROW_H < top || y > bottom {
@@ -627,7 +670,8 @@ impl Launcher {
             }
             let e = &self.entries[i];
             let missing = !e.path.is_file();
-            let title_w = row.w - 76.0 - 470.0;
+            let buttons_w = if self.has_steam { 558.0 } else { 470.0 };
+            let title_w = row.w - 76.0 - buttons_w;
             let title = self.fit(&e.title, 21, title_w);
             self.text(&title, row.x + 76.0, row.y + 30.0, 21, if missing { MUTED } else { TEXT });
             let mut p = e.path.display().to_string();
@@ -644,7 +688,7 @@ impl Launcher {
                     p = stats;
                 }
             }
-            let max_w = row.w - 76.0 - 460.0;
+            let max_w = row.w - 76.0 - buttons_w + 10.0;
             while self.text_width(&p, 14) > max_w && p.chars().count() > 8 {
                 p = format!("...{}", p.chars().skip(4).collect::<String>());
             }
@@ -655,14 +699,18 @@ impl Launcher {
             let mods = Rect::new(remove.x - 8.0 - 70.0, by, 70.0, 34.0);
             let settings = Rect::new(mods.x - 8.0 - 90.0, by, 90.0, 34.0);
             let shortcut = Rect::new(settings.x - 8.0 - 100.0, by, 100.0, 34.0);
-            let play = Rect::new(shortcut.x - 8.0 - 100.0, by, 100.0, 34.0);
+            let to_steam = Rect::new(shortcut.x - 8.0 - 80.0, by, 80.0, 34.0);
+            let play = if self.has_steam { Rect::new(to_steam.x - 8.0 - 100.0, by, 100.0, 34.0) } else { Rect::new(shortcut.x - 8.0 - 100.0, by, 100.0, 34.0) };
             let in_list = mouse.y > top && mouse.y < bottom;
-            if self.button(play, "Play", true, !missing) && in_list {
+            let running = self.running.iter().any(|(p, _)| *p == path);
+            if self.button(play, if running { "Running" } else { "Play" }, true, !missing && !running) && in_list {
                 action = Some((i, 0));
             } else if self.button(settings, "Settings", false, true) && in_list {
                 action = Some((i, 4));
             } else if self.button(shortcut, "Shortcut", false, !missing) && in_list {
                 action = Some((i, 1));
+            } else if self.has_steam && self.button(to_steam, "Steam", false, !missing && self.busy.is_none()) && in_list {
+                action = Some((i, 5));
             } else if self.button(mods, "Mods", false, true) && in_list {
                 action = Some((i, 3));
             } else if self.button(remove, "X", false, true) && in_list {
@@ -687,6 +735,13 @@ impl Launcher {
                 match library::create_shortcut(&e.path, &e.title) {
                     Ok(p) => self.say(format!("Shortcut created: {}", p.display())),
                     Err(err) => self.say(format!("Could not create the shortcut: {err}")),
+                }
+            }
+            Some((i, 5)) => {
+                if steam_shortcuts::steam_running() && !steam_shortcuts::in_gaming_mode() {
+                    self.steam_confirm = Some(i);
+                } else {
+                    self.add_to_steam(i);
                 }
             }
             Some((i, 4)) => {
@@ -847,6 +902,47 @@ impl Launcher {
                 (_, n) => format!("Added {n} game(s) from Steam."),
             }));
         });
+    }
+
+    /// Add a library entry to Steam in the background (restarting Steam if it's running).
+    fn add_to_steam(&mut self, i: usize) {
+        let Some(e) = self.entries.get(i).cloned() else { return };
+        self.busy = Some(format!("Adding {} to Steam...", e.title));
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let progress = |s: &str| {
+                let _ = tx.send(Msg::Status(s.to_string()));
+            };
+            let msg = match steam_shortcuts::add_game(&e.path, &e.title, true, progress) {
+                Ok(m) => m,
+                Err(err) => format!("Could not add {} to Steam: {err}", e.title),
+            };
+            let _ = tx.send(Msg::Done(msg));
+        });
+    }
+
+    fn draw_steam_confirm(&mut self, top: f32, i: usize) {
+        let sw = screen_width();
+        let title = self.entries.get(i).map(|e| e.title.clone()).unwrap_or_default();
+        draw_rectangle(16.0, top + 4.0, sw - 32.0, screen_height() - top - STATUS_H - 8.0, CARD);
+        self.bold_text(&format!("Add {title} to Steam"), 36.0, top + 40.0, 24, TEXT);
+        let lines = [
+            "Steam is running. It only reads its shortcuts when it starts, and can overwrite",
+            "changes made while it's open, so Rekindle will close Steam, add the shortcut",
+            "(with the game's Steam artwork if it has any) and start Steam again.",
+        ];
+        for (k, l) in lines.iter().enumerate() {
+            self.text(l, 36.0, top + 76.0 + k as f32 * 24.0, 17, MUTED);
+        }
+        let y = top + 76.0 + lines.len() as f32 * 24.0 + 20.0;
+        let go = Rect::new(36.0, y, 260.0, 38.0);
+        let cancel = Rect::new(go.x + go.w + 12.0, y, 120.0, 38.0);
+        if self.button(go, "Restart Steam and add", true, true) || self.pad_a || is_key_pressed(KeyCode::Enter) {
+            self.steam_confirm = None;
+            self.add_to_steam(i);
+        } else if self.button(cancel, "Cancel", false, true) || is_key_pressed(KeyCode::Escape) || self.pad_back {
+            self.steam_confirm = None;
+        }
     }
 
     fn draw_steam_panel(&mut self, top: f32) {
