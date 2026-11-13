@@ -956,10 +956,11 @@ impl Runtime {
         self.shift_partial_layers(self.scroll.0 - old.0, self.scroll.1 - old.1);
     }
 
-    /// Objects keep frame coordinates on every layer; a layer that scrolls at a fraction c
-    /// of the camera gets its objects moved by (1 - c) of each scroll step, as the original
-    /// runtime does. (So a HUD on a non-scrolling layer stays on screen while its objects'
-    /// coordinates follow the camera, and "set Y to the camera position" lands on screen.)
+    /// Objects keep frame coordinates everywhere. Objects that don't follow the frame move
+    /// by each scroll step, and a layer that scrolls at a fraction c of the camera moves
+    /// its objects by (1 - c) of it, as the original runtime does: a HUD stays on screen
+    /// while its coordinates follow the camera, so positions relative to other objects
+    /// and "set Y to the camera position" land where the game expects.
     fn shift_partial_layers(&mut self, dx: f64, dy: f64) {
         if dx == 0.0 && dy == 0.0 {
             return;
@@ -973,8 +974,8 @@ impl Runtime {
                 (1.0 - cx as f64, 1.0 - cy as f64)
             })
             .collect();
-        for inst in self.instances.iter_mut().filter(|i| !i.destroyed && !i.fixed) {
-            let Some(&(kx, ky)) = coefs.get(inst.layer) else { continue };
+        for inst in self.instances.iter_mut().filter(|i| !i.destroyed) {
+            let Some(&(kx, ky)) = (if inst.fixed { Some(&(1.0, 1.0)) } else { coefs.get(inst.layer) }) else { continue };
             if kx != 0.0 || ky != 0.0 {
                 inst.x += dx * kx;
                 inst.y += dy * ky;

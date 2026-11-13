@@ -333,15 +333,11 @@ impl Runtime {
         self.mouse_over(idx, x, y)
     }
 
-    /// Mouse position in the instance's coordinates: frame coordinates, except for objects
-    /// fixed to the screen. (Partially scrolling layers move their objects as the camera
-    /// scrolls, so frame coordinates hold there too.)
-    pub(super) fn layer_mouse(&self, idx: usize, x: f64, y: f64) -> (f64, f64) {
-        if self.instances[idx].fixed {
-            (x - self.scroll.0, y - self.scroll.1)
-        } else {
-            (x, y)
-        }
+    /// Mouse position in the instance's coordinates: frame coordinates for every object
+    /// (screen-fixed objects and partially scrolling layers move with the camera, see
+    /// `Runtime::center_display`).
+    pub(super) fn layer_mouse(&self, _idx: usize, x: f64, y: f64) -> (f64, f64) {
+        (x, y)
     }
 
     /// Mouse over an object: its solid pixels (or its box, for box-collision objects), like

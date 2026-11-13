@@ -1072,10 +1072,13 @@ impl Viewer {
             // While the game runs, partially scrolling layers have already moved their
             // objects with the camera (see Runtime::center_display); the static viewer
             // applies the layer's coefficient instead.
-            let coef = if item.fixed {
-                Vec2::ZERO
-            } else if self.running {
+            // While the game runs, objects that don't follow the frame and partially
+            // scrolling layers have already moved with the camera (Runtime::center_display);
+            // the static viewer applies the layer's coefficient instead.
+            let coef = if self.running {
                 Vec2::ONE
+            } else if item.fixed {
+                Vec2::ZERO
             } else {
                 coef
             };
