@@ -305,3 +305,52 @@ pub fn generate(g: &GameData, title: &str, dir: &Path) -> Vec<(&'static str, Pat
     }
     out
 }
+
+/// Rekindle's own library artwork: its icon and name on a warm dark gradient.
+pub fn generate_brand(dir: &Path) -> Vec<(&'static str, PathBuf)> {
+    let _ = std::fs::create_dir_all(dir);
+    let Some(icon) = super::icon_image() else { return Vec::new() };
+    let icon = Canvas { w: icon.width as usize, h: icon.height as usize, px: icon.rgba };
+    let text = Text::new();
+    let gradient = |w: usize, h: usize| {
+        let mut c = Canvas::new(w, h, [0; 4]);
+        for y in 0..h {
+            for x in 0..w {
+                let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+                let glow = (1.0 - ((fx - 0.5).powi(2) + (fy - 0.45).powi(2)).sqrt() * 1.6).max(0.0);
+                let i = (y * w + x) * 4;
+                c.px[i] = (22.0 + 70.0 * glow) as u8;
+                c.px[i + 1] = (16.0 + 30.0 * glow) as u8;
+                c.px[i + 2] = (14.0 + 12.0 * glow) as u8;
+                c.px[i + 3] = 255;
+            }
+        }
+        c
+    };
+    let mut out = Vec::new();
+    let mut save = |suffix: &'static str, name: &str, c: &Canvas| {
+        let p = dir.join(name);
+        if c.save(&p).is_ok() {
+            out.push((suffix, p));
+        }
+    };
+    let mut p = gradient(600, 900);
+    p.draw(&icon.scaled(300, 300), 150, 230);
+    if let Some(t) = &text {
+        t.draw(&mut p, "Rekindle", 84.0, 0.0, Some(300.0), 660.0);
+    }
+    save("p", "portrait.png", &p);
+    let mut w = gradient(920, 430);
+    w.draw(&icon.scaled(220, 220), 90, 105);
+    if let Some(t) = &text {
+        t.draw(&mut w, "Rekindle", 96.0, 350.0, None, 250.0);
+    }
+    save("", "wide.png", &w);
+    save("_hero", "hero.png", &gradient(1920, 620));
+    if let Some(t) = &text {
+        let mut l = Canvas::new(560, 150, [0; 4]);
+        t.draw(&mut l, "Rekindle", 110.0, 0.0, Some(280.0), 115.0);
+        save("_logo", "logo.png", &l);
+    }
+    out
+}

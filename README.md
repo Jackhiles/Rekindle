@@ -83,7 +83,9 @@ logo) is copied from Steam's cache; other games get artwork made from the game i
 full-screen picture with its icon and title). The shortcut is named "<title> (Rekindle)" and tagged for a "Rekindle"
 collection. Steam only reads its shortcuts when it starts and may overwrite the file while
 open, so a running Steam is closed and started again around the change (in Steam's Gaming Mode, where that isn't
-possible, the shortcut appears after the next restart). The original file is kept as `shortcuts.vdf.rekindle-backup`.
+possible, the shortcut appears after the next restart). The original file is kept as `shortcuts.vdf.rekindle-backup`. Release builds of the launcher also add **Rekindle itself** to
+Steam when it isn't there yet: quietly when Steam is closed, otherwise the status bar offers it (Add / Not now /
+Don't ask again, saved as `add_self_to_steam=never` in `launcher.ini`).
 
 **Steam games** finds Clickteam Fusion games installed through Steam (all Steam libraries; on Linux also Flatpak
 Steam) and adds them, either linked where Steam installed them or copied into a storage folder you choose (so they

@@ -123,6 +123,8 @@ struct LauncherConfig {
     /// Copy Steam games into `storage` instead of linking them where Steam installed them.
     steam_copy: bool,
     storage: PathBuf,
+    /// Don't offer to add Rekindle itself to Steam.
+    steam_self_never: bool,
 }
 
 impl LauncherConfig {
@@ -131,12 +133,13 @@ impl LauncherConfig {
     }
 
     fn load() -> Self {
-        let mut c = Self { steam_copy: false, storage: library::data_dir().join("games") };
+        let mut c = Self { steam_copy: false, storage: library::data_dir().join("games"), steam_self_never: false };
         if let Ok(text) = std::fs::read_to_string(Self::file()) {
             for line in text.lines() {
                 match line.split_once('=') {
                     Some(("steam_mode", v)) => c.steam_copy = v.trim() == "copy",
                     Some(("storage", v)) if !v.trim().is_empty() => c.storage = PathBuf::from(v.trim()),
+                    Some(("add_self_to_steam", v)) => c.steam_self_never = v.trim() == "never",
                     _ => {}
                 }
             }
@@ -146,9 +149,10 @@ impl LauncherConfig {
 
     fn save(&self) {
         let text = format!(
-            "[launcher]\nsteam_mode={}\nstorage={}\n",
+            "[launcher]\nsteam_mode={}\nstorage={}\nadd_self_to_steam={}\n",
             if self.steam_copy { "copy" } else { "link" },
-            self.storage.display()
+            self.storage.display(),
+            if self.steam_self_never { "never" } else { "ask" }
         );
         let _ = std::fs::create_dir_all(library::data_dir());
         let _ = std::fs::write(Self::file(), text);
@@ -160,6 +164,8 @@ enum Msg {
     Status(String),
     Done(String),
     UpdateAvailable(update::Release),
+    /// Steam is open and has no Rekindle shortcut: offer to add one.
+    OfferSteamShortcut,
     /// A line for the Steam panel's results.
     SteamLine(String),
     UpdateInstalled(Result<PathBuf, String>),
@@ -207,6 +213,8 @@ struct Launcher {
     has_steam: bool,
     /// Asking to restart Steam before adding this library entry to it.
     steam_confirm: Option<usize>,
+    /// Offering (in the status bar) to add Rekindle itself to Steam.
+    steam_offer: bool,
 }
 
 impl Launcher {
@@ -245,6 +253,7 @@ impl Launcher {
             running: Vec::new(),
             has_steam: !steam::steam_roots().is_empty(),
             steam_confirm: None,
+            steam_offer: false,
         }
     }
 
@@ -543,6 +552,7 @@ impl Launcher {
                     self.say(s);
                 }
                 Msg::UpdateAvailable(r) => self.update = Some(r),
+                Msg::OfferSteamShortcut => self.steam_offer = true,
                 Msg::SteamLine(l) => self.steam_lines.push(l),
                 Msg::UpdateInstalled(Ok(exe)) => {
                     // Start the new version and close this one.
@@ -986,6 +996,61 @@ impl Launcher {
         }
     }
 
+    /// On start: make sure Steam has a shortcut to Rekindle. Added quietly when Steam is
+    /// closed; when it's open (adding means restarting it) the status bar asks first.
+    fn check_steam_shortcut(&self) {
+        if !self.has_steam || self.config.steam_self_never || update::is_dev_build() || steam_shortcuts::in_gaming_mode() {
+            return;
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            if steam_shortcuts::has_launcher_shortcut() || steam_shortcuts::user_config_dir().is_none() {
+                return;
+            }
+            if steam_shortcuts::steam_running() {
+                let _ = tx.send(Msg::OfferSteamShortcut);
+            } else if let Ok(msg) = steam_shortcuts::add_launcher(false, |_| {}) {
+                let _ = tx.send(Msg::Done(msg));
+            }
+        });
+    }
+
+    fn draw_steam_offer(&mut self, sh: f32) {
+        let y = sh - STATUS_H + 2.0;
+        let msg = "Add Rekindle to Steam? (Steam restarts)";
+        self.text(msg, 20.0, sh - 10.0, 16, TEXT);
+        let mut x = 20.0 + self.text_width(msg, 16) + 14.0;
+        let mut clicked = None;
+        for (k, (label, accent)) in [("Add", true), ("Not now", false), ("Don't ask again", false)].into_iter().enumerate() {
+            let w = self.text_width(label, 16) + 26.0;
+            if self.button(Rect::new(x, y, w, STATUS_H - 4.0), label, accent, true) {
+                clicked = Some(k);
+            }
+            x += w + 8.0;
+        }
+        match clicked {
+            Some(0) => {
+                self.steam_offer = false;
+                self.busy = Some("Adding Rekindle to Steam...".into());
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let progress = |s: &str| {
+                        let _ = tx.send(Msg::Status(s.to_string()));
+                    };
+                    let msg = steam_shortcuts::add_launcher(true, progress).unwrap_or_else(|e| format!("Could not add Rekindle to Steam: {e}"));
+                    let _ = tx.send(Msg::Done(msg));
+                });
+            }
+            Some(1) => self.steam_offer = false,
+            Some(_) => {
+                self.steam_offer = false;
+                self.config.steam_self_never = true;
+                self.config.save();
+            }
+            None => {}
+        }
+    }
+
     fn draw_status(&mut self, sh: f32) {
         // Update offer at the right of the status bar.
         if let Some(r) = self.update.clone() {
@@ -1001,6 +1066,10 @@ impl Launcher {
                 });
             }
         }
+        if self.steam_offer && self.busy.is_none() {
+            self.draw_steam_offer(sh);
+            return;
+        }
         let line = match (&self.busy, &self.status) {
             (Some(b), _) => Some(b.clone()),
             (None, Some((s, until))) if get_time() < *until => Some(s.clone()),
@@ -1015,6 +1084,7 @@ impl Launcher {
 pub async fn run() {
     let mut l = Launcher::new();
     l.start_update_check();
+    l.check_steam_shortcut();
     loop {
         l.update();
         l.refresh_log();

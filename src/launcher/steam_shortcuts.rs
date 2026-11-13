@@ -104,8 +104,8 @@ pub struct Shortcut {
     pub name: String,
     /// Rekindle itself.
     pub exe: PathBuf,
-    /// The game file, passed to Rekindle.
-    pub game: PathBuf,
+    /// The game file, passed to Rekindle (None: the shortcut opens the launcher).
+    pub game: Option<PathBuf>,
     pub icon: Option<PathBuf>,
 }
 
@@ -126,9 +126,9 @@ pub fn add_to_vdf(existing: Option<&[u8]>, s: &Shortcut) -> Result<(Vec<u8>, u32
         return Err("Steam's shortcuts file has an unexpected layout".into());
     };
     let exe = quoted(&s.exe);
-    let launch = quoted(&s.game);
+    let launch = s.game.as_deref().map(quoted).unwrap_or_default();
     let id = shortcut_app_id(&exe, &s.name);
-    let dir = s.game.parent().map(quoted).unwrap_or_default();
+    let dir = s.game.as_deref().unwrap_or(&s.exe).parent().map(quoted).unwrap_or_default();
     let entry = vec![
         ("appid".to_string(), Value::Int(id)),
         ("appname".into(), Value::Str(s.name.clone())),
@@ -147,7 +147,7 @@ pub fn add_to_vdf(existing: Option<&[u8]>, s: &Shortcut) -> Result<(Vec<u8>, u32
         ("LastPlayTime".into(), Value::Int(0)),
         ("FlatpakAppID".into(), Value::Str(String::new())),
         // Shown as a "Rekindle" collection in Steam's library.
-        ("tags".into(), Value::Map(vec![("0".into(), Value::Str("Rekindle".into()))])),
+        ("tags".into(), Value::Map(if s.game.is_some() { vec![("0".into(), Value::Str("Rekindle".into()))] } else { vec![] })),
     ];
     // Same game through Rekindle already there (any name): replace it in place.
     let field = |m: &[(String, Value)], key: &str| {
@@ -294,6 +294,59 @@ pub fn install_art(config_dir: &Path, shortcut_id: u32, art: &[(&str, PathBuf)])
     n
 }
 
+/// Does Steam already have a shortcut that opens this Rekindle (the launcher, no game)?
+pub fn has_launcher_shortcut() -> bool {
+    let Ok(exe) = super::update::program_path() else { return true };
+    let exe = quoted(&exe);
+    let Some(file) = user_config_dir().map(|d| d.join("shortcuts.vdf")) else { return false };
+    let Some(root) = std::fs::read(file).ok().and_then(|b| parse(&b)) else { return false };
+    let Some((_, Value::Map(list))) = root.iter().find(|(k, _)| k.eq_ignore_ascii_case("shortcuts")) else { return false };
+    list.iter().any(|(_, v)| {
+        let Value::Map(m) = v else { return false };
+        let get = |key: &str| {
+            m.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).and_then(|(_, v)| match v {
+                Value::Str(s) => Some(s.trim().to_string()),
+                _ => None,
+            })
+        };
+        // Steam itself may store the path with or without quotes.
+        let e = get("Exe").unwrap_or_default();
+        (e == exe || format!("\"{e}\"") == exe) && get("LaunchOptions").unwrap_or_default().is_empty()
+    })
+}
+
+/// Add Rekindle itself (the launcher) to Steam, with artwork made from its icon.
+pub fn add_launcher(may_restart: bool, progress: impl Fn(&str)) -> Result<String, String> {
+    let exe = super::update::program_path().map_err(|e| e.to_string())?;
+    let dir = super::library::data_dir().join("steam").join("rekindle");
+    let _ = std::fs::create_dir_all(&dir);
+    let icon = dir.join("icon.png");
+    let icon = std::fs::write(&icon, super::ICON_PNG).ok().map(|_| icon);
+    let art = super::art::generate_brand(&dir);
+    let shortcut = Shortcut { name: "Rekindle".into(), exe, game: None, icon };
+    write_with_restart(&shortcut, &art, may_restart, progress)?;
+    Ok("Added Rekindle to Steam.".into())
+}
+
+/// Write a shortcut, closing and restarting Steam around it when allowed and needed.
+fn write_with_restart(s: &Shortcut, art: &[(&str, PathBuf)], may_restart: bool, progress: impl Fn(&str)) -> Result<(usize, bool), String> {
+    let running = steam_running();
+    let restart = running && may_restart && !in_gaming_mode();
+    if restart {
+        progress("Closing Steam...");
+        if !shutdown_steam() {
+            return Err("Steam didn't close; close it yourself and try again".into());
+        }
+    }
+    progress("Adding the shortcut...");
+    let n = add(s, art);
+    if restart {
+        progress("Starting Steam...");
+        start_steam();
+    }
+    Ok((n?, running && !restart))
+}
+
 /// Make the artwork Rekindle would give a game without Steam artwork, into `dir`.
 pub fn preview_art(game: &Path, title: &str, dir: &Path) -> Vec<PathBuf> {
     load_game(game).map(|g| super::art::generate(&g, title, dir).into_iter().map(|(_, p)| p).collect()).unwrap_or_default()
@@ -407,7 +460,7 @@ pub fn add_game(game: &Path, title: &str, may_restart: bool, progress: impl Fn(&
     let dir = work_dir(&game);
     let icon = data.as_ref().zip(dir.as_deref()).and_then(|(g, d)| icon_for(g, d));
     // "(Rekindle)" tells it apart from a Steam copy of the same game.
-    let shortcut = Shortcut { name: format!("{title} (Rekindle)"), exe, game: game.clone(), icon };
+    let shortcut = Shortcut { name: format!("{title} (Rekindle)"), exe, game: Some(game.clone()), icon };
     let app = steam_app_for(&game);
     let mut art = app.as_deref().map(steam_art).unwrap_or_default();
     // Not a Steam game (or Steam has no pictures of it): make artwork from the game itself.
@@ -418,27 +471,13 @@ pub fn add_game(game: &Path, title: &str, may_restart: bool, progress: impl Fn(&
         }
     }
     drop(data);
-    let running = steam_running();
-    let restart = running && may_restart && !in_gaming_mode();
-    if restart {
-        progress("Closing Steam...");
-        if !shutdown_steam() {
-            return Err("Steam didn't close; close it yourself and try again".into());
-        }
-    }
-    progress("Adding the shortcut...");
-    let n = add(&shortcut, &art);
-    if restart {
-        progress("Starting Steam...");
-        start_steam();
-    }
-    let n = n?;
+    let (n, later) = write_with_restart(&shortcut, &art, may_restart, progress)?;
     let art_note = match (generated, n) {
         (false, _) => " with its Steam artwork",
         (true, n) if n > 0 => " with artwork made from the game",
         _ => "",
     };
-    Ok(if running && !restart {
+    Ok(if later {
         format!("Added {title} to Steam{art_note}. It appears after Steam restarts.")
     } else {
         format!("Added {title} to Steam{art_note}.")
@@ -465,7 +504,7 @@ mod tests {
                 ]),
             )]),
         )]);
-        let s = Shortcut { name: "My Game".into(), exe: "/apps/Rekindle".into(), game: "/games/My Game/game.exe".into(), icon: None };
+        let s = Shortcut { name: "My Game".into(), exe: "/apps/Rekindle".into(), game: Some("/games/My Game/game.exe".into()), icon: None };
         let (once, id) = add_to_vdf(Some(&existing), &s).unwrap();
         assert_eq!(id, shortcut_app_id("\"/apps/Rekindle\"", "My Game"));
         assert!(id & 0x8000_0000 != 0);
