@@ -13,6 +13,28 @@ use crate::runtime::Runtime;
 use macroquad::audio::{load_sound_from_bytes, play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
+
+/// Decoded sounds kept in memory at most (roughly); the least recently played ones that
+/// are not playing are dropped and decoded again if they are needed later.
+const SOUND_BUDGET: usize = 160 << 20;
+
+/// Bookkeeping for a decoded sound.
+struct Use {
+    /// Approximate memory the backend holds for it.
+    bytes: usize,
+    duration: Duration,
+    /// When it was last started (or decoded).
+    last: Instant,
+    /// May still be audible: looping, or started less than its length ago.
+    looping: bool,
+}
+
+impl Use {
+    fn maybe_playing(&self, now: Instant) -> bool {
+        self.looping || now.duration_since(self.last) < self.duration + Duration::from_millis(500)
+    }
+}
 
 enum Slot {
     Decoding,
@@ -37,8 +59,9 @@ impl Start {
 
 /// What a worker thread produced.
 enum Decoded {
-    /// 44.1 kHz stereo samples and the exact duration (first decode of a sound).
-    Sound(u32, Result<(Vec<i16>, f64), String>),
+    /// A WAV of the 44.1 kHz stereo samples, their count and the exact duration (first
+    /// decode of a sound). Built on the worker so the samples aren't held twice here.
+    Sound(u32, Result<(Vec<u8>, usize, f64), String>),
     /// A ready-to-load WAV for a positioned / panned start.
     Variant(u32, Start, Vec<u8>),
 }
@@ -51,6 +74,8 @@ pub struct AudioOut {
     pending_variants: HashMap<u32, Start>,
     /// Positioned / panned variants currently playing (one per sound).
     variants: HashMap<u32, Sound>,
+    uses: HashMap<u32, Use>,
+    bytes: usize,
     tx: Sender<Decoded>,
     rx: Receiver<Decoded>,
     pub enabled: bool,
@@ -66,6 +91,8 @@ impl AudioOut {
             pending: HashMap::new(),
             pending_variants: HashMap::new(),
             variants: HashMap::new(),
+            uses: HashMap::new(),
+            bytes: 0,
             tx,
             rx,
             enabled,
@@ -93,7 +120,8 @@ impl AudioOut {
         let tx = self.tx.clone();
         self.slots.insert(handle, Slot::Decoding);
         std::thread::spawn(move || {
-            let _ = tx.send(Decoded::Sound(handle, job()));
+            let r = job().map(|(samples, ms)| (audio::wav_from_stereo(&samples), samples.len(), ms));
+            let _ = tx.send(Decoded::Sound(handle, r));
         });
     }
 
@@ -116,6 +144,10 @@ impl AudioOut {
         if let Some(Slot::Ready(s)) = self.slots.get(&handle) {
             stop_sound(s);
         }
+        if let Some(u) = self.uses.get_mut(&handle) {
+            u.looping = false;
+            u.duration = Duration::ZERO;
+        }
         if let Some(v) = self.variants.remove(&handle) {
             stop_sound(&v);
         }
@@ -129,6 +161,40 @@ impl AudioOut {
         }
         if let Some(Slot::Ready(sound)) = self.slots.get(&handle) {
             play_sound(sound, PlaySoundParams { looped: st.looped, volume: st.volume });
+            if let Some(u) = self.uses.get_mut(&handle) {
+                u.last = Instant::now();
+                u.looping = st.looped;
+                u.duration = Duration::from_secs_f64(rt.audio.durations.get(&handle).copied().unwrap_or(0.0).max(0.0) / 1000.0);
+            }
+        }
+    }
+
+    /// Approximate memory held by decoded sounds.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Drop decoded sounds that aren't playing, least recently used first, while over budget.
+    fn trim(&mut self) {
+        if self.bytes <= SOUND_BUDGET {
+            return;
+        }
+        let now = Instant::now();
+        let mut idle: Vec<(Instant, u32)> = self
+            .uses
+            .iter()
+            .filter(|(h, u)| !u.maybe_playing(now) && !self.pending.contains_key(h) && !self.variants.contains_key(h))
+            .map(|(h, u)| (u.last, *h))
+            .collect();
+        idle.sort();
+        for (_, h) in idle {
+            if self.bytes <= SOUND_BUDGET * 3 / 4 {
+                break;
+            }
+            if let Some(u) = self.uses.remove(&h) {
+                self.bytes -= u.bytes;
+                self.slots.remove(&h); // the Sound's drop frees the backend's buffer
+            }
         }
     }
 
@@ -189,9 +255,20 @@ impl AudioOut {
             match done {
                 Decoded::Sound(handle, result) => {
                     let slot = match result {
-                        Ok((samples, ms)) => {
+                        Ok((wav, samples, ms)) => {
                             rt.audio.durations.insert(handle, ms);
-                            match load_sound_from_bytes(&audio::wav_from_stereo(&samples)).await {
+                            // The backend keeps the samples as f32 in a vector grown by doubling.
+                            let bytes = (samples * 4).next_power_of_two();
+                            if let Some(old) = self.uses.insert(
+                                handle,
+                                Use { bytes, duration: Duration::ZERO, last: Instant::now(), looping: false },
+                            ) {
+                                self.bytes -= old.bytes;
+                            }
+                            self.bytes += bytes;
+                            let loaded = load_sound_from_bytes(&wav).await;
+                            drop(wav);
+                            match loaded {
                                 Ok(s) => Slot::Ready(s),
                                 Err(e) => {
                                     eprintln!("sound {handle}: {e:?}");
@@ -228,5 +305,6 @@ impl AudioOut {
                 }
             }
         }
+        self.trim();
     }
 }

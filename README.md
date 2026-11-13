@@ -175,6 +175,9 @@ Run them with `rekindle --scenario FILE_OR_DIR`, or as part of `cargo test` by s
 
 Debug environment variables: `REKINDLE_PROFILE=1` makes `--headless` print the slowest events;
 `REKINDLE_NO_EFFECTS=1` disables distortion effects for comparison. `REKINDLE_TRACE=N` prints each condition result of event N every tick.
+`REKINDLE_WALK_FRAMES=MS` shows every frame for MS milliseconds and exits (a memory benchmark; not logged as play time).
+`REKINDLE_TEXTURE_MB=N` changes the texture cache budget (default 192 MB). Textures and decoded sounds (about 160 MB)
+are kept in least-recently-used caches; whatever the current frame draws or is still playing is never dropped.
 
 ## CLI
 

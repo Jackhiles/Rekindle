@@ -427,23 +427,31 @@ impl InkMaterials {
     }
 }
 
-/// Lazily decoded GPU textures keyed by image handle. Kept across frame changes
-/// until they pass a memory budget.
+/// Lazily decoded GPU textures keyed by image handle, kept within a memory budget:
+/// the least recently drawn ones are dropped first (never those of the current frame).
 #[derive(Default)]
 struct Textures {
-    map: HashMap<u32, Option<Texture2D>>,
+    /// handle -> (texture, bytes, draw frame it was last used in)
+    map: HashMap<u32, (Option<Texture2D>, usize, u64)>,
     bytes: usize,
+    /// Counts rendered frames (for least-recently-used eviction).
+    clock: u64,
     /// Replacement images from mods.
     mods: std::sync::Arc<crate::mods::Mods>,
 }
 
-/// Decoded-texture budget before the cache is emptied on a frame change.
-const TEXTURE_BUDGET: usize = 768 << 20;
+/// Textures kept on the GPU at most (roughly; `REKINDLE_TEXTURE_MB` overrides it).
+fn texture_budget() -> usize {
+    static B: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *B.get_or_init(|| std::env::var("REKINDLE_TEXTURE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(192) << 20)
+}
 
 impl Textures {
     fn get(&mut self, g: &GameData, handle: u32) -> Option<Texture2D> {
-        if let Some(t) = self.map.get(&handle) {
-            return t.clone();
+        let clock = self.clock;
+        if let Some(e) = self.map.get_mut(&handle) {
+            e.2 = clock;
+            return e.0.clone();
         }
         let original = g.images.get(handle);
         let replaced = self.mods.image(handle);
@@ -452,25 +460,42 @@ impl Textures {
             _ => false,
         };
         let img = replaced.or_else(|| original.and_then(|e| e.decode_rgba().ok()));
+        let mut size = 0;
         let tex = img.and_then(|img| {
             if img.width == 0 || img.height == 0 {
                 return None;
             }
-            self.bytes += img.pixels.len();
+            size = img.pixels.len();
             let t = Texture2D::from_rgba8(img.width as u16, img.height as u16, &img.pixels);
             // A replacement at another resolution is scaled to the original's size.
             t.set_filter(if resized { FilterMode::Linear } else { FilterMode::Nearest });
             Some(t)
         });
-        self.map.insert(handle, tex.clone());
+        self.bytes += size;
+        self.map.insert(handle, (tex.clone(), size, clock));
         tex
     }
 
-    fn trim(&mut self) {
-        if self.bytes > TEXTURE_BUDGET {
-            self.map.clear();
-            self.bytes = 0;
+    /// Call once per rendered frame: advance the clock and release old textures if the
+    /// cache is over budget.
+    fn end_frame(&mut self) {
+        if self.bytes > texture_budget() {
+            let mut old: Vec<(u64, u32, usize)> = self
+                .map
+                .iter()
+                .filter(|(_, e)| e.2 < self.clock)
+                .map(|(h, e)| (e.2, *h, e.1))
+                .collect();
+            old.sort_unstable();
+            for (_, h, size) in old {
+                if self.bytes <= texture_budget() * 3 / 4 {
+                    break;
+                }
+                self.map.remove(&h);
+                self.bytes -= size;
+            }
         }
+        self.clock += 1;
     }
 }
 
@@ -573,7 +598,7 @@ impl Viewer {
         self.scroll = Vec2::ZERO;
         self.layer_off = vec![false; self.rt.frame().layers.len().max(1)];
         // Keep decoded images for revisits, unless the cache has grown too large.
-        self.textures.trim();
+
     }
 
     fn view_size(&self) -> Vec2 {
@@ -994,6 +1019,7 @@ impl Viewer {
         if self.hud {
             self.draw_hud();
         }
+        self.textures.end_frame();
     }
 
     fn item_bounds(&self, item: &SceneItem) -> Rect {
@@ -1487,7 +1513,22 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
     prevent_quit();
     let started = chrono::Local::now();
     let clock = std::time::Instant::now();
+    // Benchmarking: REKINDLE_WALK_FRAMES=<ms> shows every frame for that long, then exits.
+    let walk = std::env::var("REKINDLE_WALK_FRAMES").ok().and_then(|v| v.parse::<f64>().ok());
+    let mut walk_next = get_time();
+    let mut walk_frame = 0usize;
     loop {
+        if let Some(ms) = walk {
+            if get_time() >= walk_next {
+                if walk_frame >= v.rt.game.frames.len() {
+                    break;
+                }
+                eprintln!("walk: frame {walk_frame}, textures {} MB, sounds {} MB", v.textures.bytes >> 20, v.audio.bytes() >> 20);
+                v.load_frame(walk_frame);
+                walk_frame += 1;
+                walk_next = get_time() + ms / 1000.0;
+            }
+        }
         let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
         if (ctrl && is_key_pressed(KeyCode::Q)) || is_quit_requested() {
             break;
@@ -1511,7 +1552,9 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
     } else {
         v.rt.game.name.trim().to_string()
     };
-    crate::launcher::playlog::record(&path, &title, started, secs);
+    if walk.is_none() {
+        crate::launcher::playlog::record(&path, &title, started, secs);
+    }
     v.log.line(&format!("session ended after {}", crate::launcher::playlog::duration(secs)));
 }
 
