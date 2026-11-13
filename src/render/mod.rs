@@ -308,12 +308,14 @@ impl Offscreen {
     fn present(&self, from: &RenderTarget, at: Vec2, size: Vec2, filter: settings::Filter) {
         let tex = &from.texture;
         tex.set_filter(if filter == settings::Filter::Sharp { FilterMode::Nearest } else { FilterMode::Linear });
-        let material = match filter {
-            settings::Filter::Enhanced => self.bicubic.as_ref().or(self.blit.as_ref()),
+        let material = match (filter, &self.bicubic) {
+            (settings::Filter::Enhanced, Some(b)) => {
+                b.set_uniform("tex_size", vec2(self.size.0 as f32, self.size.1 as f32));
+                Some(b)
+            }
             _ => self.blit.as_ref(),
         };
         if let Some(m) = material {
-            m.set_uniform("tex_size", vec2(self.size.0 as f32, self.size.1 as f32));
             gl_use_material(m);
         }
         let params = DrawTextureParams {
