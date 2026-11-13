@@ -41,15 +41,20 @@ pub struct ViewerOptions {
     pub save_dir: Option<std::path::PathBuf>,
     /// The file the player opened (an .exe even if its data is a .dat); play time is logged under it.
     pub game_path: Option<PathBuf>,
+    /// The game's player settings (fullscreen, scaling, filter, HUD).
+    pub settings: settings::Settings,
     /// Force fullscreen (true) or windowed (false); None = saved choice, else the game's setting.
     pub fullscreen: Option<bool>,
 }
 
 /// Window configuration derived from the application header. Very large games are
 /// scaled down so the window fits on a typical desktop.
-pub fn window_conf(g: &GameData) -> Conf {
+pub fn window_conf(g: &GameData, s: &settings::Settings) -> Conf {
     let (w, h) = app_size(g);
-    let scale = (1600.0 / w).min(900.0 / h).min(1.0);
+    let scale = match s.window_scale {
+        0 => (1600.0 / w).min(900.0 / h).min(1.0),
+        k => k as f32,
+    };
     Conf {
         window_title: if g.name.is_empty() {
             "Rekindle".into()
@@ -177,6 +182,42 @@ void main() {
     gl_FragColor = vec4(texture2D(Texture, uv).rgb, 1.0);
 }"#;
 
+/// Catmull-Rom bicubic upscaling in 9 bilinear taps (needs a linearly filtered texture).
+const BICUBIC_FS: &str = r#"#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+uniform vec2 tex_size;
+void main() {
+    vec2 p = uv * tex_size;
+    vec2 t1 = floor(p - 0.5) + 0.5;
+    vec2 f = p - t1;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (t1 - 1.0) / tex_size;
+    vec2 t3 = (t1 + 2.0) / tex_size;
+    vec2 t12 = (t1 + w2 / w12) / tex_size;
+    vec3 c = vec3(0.0);
+    c += texture2D(Texture, vec2(t0.x, t0.y)).rgb * w0.x * w0.y;
+    c += texture2D(Texture, vec2(t12.x, t0.y)).rgb * w12.x * w0.y;
+    c += texture2D(Texture, vec2(t3.x, t0.y)).rgb * w3.x * w0.y;
+    c += texture2D(Texture, vec2(t0.x, t12.y)).rgb * w0.x * w12.y;
+    c += texture2D(Texture, vec2(t12.x, t12.y)).rgb * w12.x * w12.y;
+    c += texture2D(Texture, vec2(t3.x, t12.y)).rgb * w3.x * w12.y;
+    c += texture2D(Texture, vec2(t0.x, t3.y)).rgb * w0.x * w3.y;
+    c += texture2D(Texture, vec2(t12.x, t3.y)).rgb * w12.x * w3.y;
+    c += texture2D(Texture, vec2(t3.x, t3.y)).rgb * w3.x * w3.y;
+    gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}"#;
+
 /// Off-screen targets used when a frame contains distortion effects.
 struct Offscreen {
     size: (u32, u32),
@@ -184,6 +225,8 @@ struct Offscreen {
     snapshot: RenderTarget,
     material: Option<Material>,
     blit: Option<Material>,
+    /// Bicubic upscaling for the "enhanced" filter.
+    bicubic: Option<Material>,
 }
 
 impl Offscreen {
@@ -220,7 +263,20 @@ impl Offscreen {
         let main = make();
         // The finished frame is scaled to the window; filtering keeps that smooth.
         main.texture.set_filter(FilterMode::Linear);
+        let bicubic = load_material(
+            ShaderSource::Glsl {
+                vertex: EFFECT_VS,
+                fragment: BICUBIC_FS,
+            },
+            MaterialParams {
+                uniforms: vec![UniformDesc::new("tex_size", UniformType::Float2)],
+                ..Default::default()
+            },
+        )
+        .map_err(|e| eprintln!("bicubic shader unavailable: {e:?}"))
+        .ok();
         Self {
+            bicubic,
             size: (w, h),
             main,
             snapshot: make(),
@@ -241,6 +297,28 @@ impl Offscreen {
         };
         draw_texture_ex(&from.texture, x, y, WHITE, params);
         gl_use_default_material();
+    }
+
+    /// Draw the finished frame to the window with the chosen filter.
+    fn present(&self, from: &RenderTarget, at: Vec2, size: Vec2, filter: settings::Filter) {
+        let tex = &from.texture;
+        tex.set_filter(if filter == settings::Filter::Sharp { FilterMode::Nearest } else { FilterMode::Linear });
+        let material = match filter {
+            settings::Filter::Enhanced => self.bicubic.as_ref().or(self.blit.as_ref()),
+            _ => self.blit.as_ref(),
+        };
+        if let Some(m) = material {
+            m.set_uniform("tex_size", vec2(self.size.0 as f32, self.size.1 as f32));
+            gl_use_material(m);
+        }
+        let params = DrawTextureParams {
+            dest_size: Some(size),
+            flip_y: OFFSCREEN_FLIP_Y,
+            ..Default::default()
+        };
+        draw_texture_ex(tex, at.x, at.y, WHITE, params);
+        gl_use_default_material();
+        tex.set_filter(FilterMode::Linear);
     }
 
     fn camera(&self, target: &RenderTarget) -> Camera2D {
@@ -511,12 +589,26 @@ impl Viewer {
         self.scroll = self.scroll.clamp(Vec2::ZERO, max);
     }
 
-    /// Screen rectangle the game view occupies (letterboxed) and its scale.
-    fn viewport(&self) -> (Vec2, f32) {
+    /// Where the game view appears on screen (top-left and size), per the scaling setting.
+    fn present(&self) -> (Vec2, Vec2) {
         let view = self.view_size();
-        let scale = (screen_width() / view.x).min(screen_height() / view.y);
-        let origin = (vec2(screen_width(), screen_height()) - view * scale) * 0.5;
-        (origin, scale)
+        let screen = vec2(screen_width(), screen_height());
+        let fit = (screen.x / view.x).min(screen.y / view.y);
+        let scale = match self.settings.scaling {
+            _ if self.fit => fit,
+            settings::Scaling::Stretch => return (Vec2::ZERO, screen),
+            settings::Scaling::Integer if fit >= 1.0 => fit.floor(),
+            _ => fit,
+        };
+        let size = view * scale;
+        ((screen - size) * 0.5, size)
+    }
+
+    /// Screen position and uniform scale of the game view (stretching is done by the
+    /// final blit, so the scene itself is always drawn with one scale).
+    fn viewport(&self) -> (Vec2, f32) {
+        let (origin, size) = self.present();
+        (origin, size.x / self.view_size().x)
     }
 
     fn current_scroll(&self) -> Vec2 {
@@ -551,8 +643,8 @@ impl Viewer {
                 self.input.down.insert([1u16, 4, 2][i]);
             }
         }
-        let (origin, scale) = self.viewport();
-        let m = (Vec2::from(mouse_position()) - origin) / scale + self.current_scroll();
+        let (origin, size) = self.present();
+        let m = (Vec2::from(mouse_position()) - origin) / (size / self.view_size()) + self.current_scroll();
         self.input.mouse = (m.x as f64, m.y as f64);
         self.input.wheel += mouse_wheel().1;
     }
@@ -578,8 +670,24 @@ impl Viewer {
             self.settings.save();
         }
         if is_key_pressed(KeyCode::F9) {
-            self.settings.smooth = !self.settings.smooth;
+            use settings::Filter::*;
+            self.settings.filter = match self.settings.filter {
+                Sharp => Smooth,
+                Smooth => Enhanced,
+                Enhanced => Sharp,
+            };
             self.settings.save();
+            self.notice = Some((format!("Filter: {}", self.settings.filter.name()), get_time() + 2.0));
+        }
+        if is_key_pressed(KeyCode::F10) {
+            use settings::Scaling::*;
+            self.settings.scaling = match self.settings.scaling {
+                Fit => Integer,
+                Integer => Stretch,
+                Stretch => Fit,
+            };
+            self.settings.save();
+            self.notice = Some((format!("Scaling: {}", self.settings.scaling.name()), get_time() + 2.0));
         }
         if is_key_pressed(KeyCode::F2) {
             self.running = !self.running;
@@ -731,7 +839,7 @@ impl Viewer {
         set_fullscreen(on);
         if !on {
             // Back to the normal window size.
-            let conf = window_conf(&self.rt.game);
+            let conf = window_conf(&self.rt.game, &self.settings);
             request_new_screen_size(conf.window_width as f32, conf.window_height as f32);
         }
         self.fullscreen = on;
@@ -741,6 +849,7 @@ impl Viewer {
         let g_border = self.rt.game.header.border_color;
         clear_background(opaque(g_border));
         let (screen_origin, screen_scale) = self.viewport();
+        let (_, present_size) = self.present();
         let view = self.view_size();
         let scene = self.rt.draw_items();
         // Distortion effects need what's behind them as a texture: draw the game view
@@ -748,8 +857,10 @@ impl Viewer {
         let has_effect = scene
             .iter()
             .any(|i| matches!(i.visual, Visual::Effect { .. }) && (i.visible || self.show_hidden));
-        let scaled = (screen_scale - 1.0).abs() > 0.01;
-        let use_offscreen = !self.fit && (has_effect || (self.settings.smooth && scaled));
+        let scaled = (present_size - view).abs().max_element() > 0.5;
+        let stretched = self.settings.scaling == settings::Scaling::Stretch;
+        let use_offscreen = !self.fit
+            && (has_effect || stretched || (scaled && self.settings.filter != settings::Filter::Sharp));
         if use_offscreen {
             let want = (view.x.max(1.0) as u32, view.y.max(1.0) as u32);
             if self.offscreen.as_ref().is_none_or(|o| o.size != want) {
@@ -823,25 +934,20 @@ impl Viewer {
         if use_offscreen {
             set_default_camera();
             let off = self.offscreen.as_ref().expect("created");
-            off.blit(
-                &off.main,
-                screen_origin.x,
-                screen_origin.y,
-                view * screen_scale,
-            );
+            off.present(&off.main, screen_origin, present_size, self.settings.filter);
         }
         let (origin, scale) = (screen_origin, screen_scale);
 
         // Frame transition.
         if let Some(t) = &self.rt.transition {
-            draw_transition(t, origin, view * scale);
+            draw_transition(t, origin, present_size);
         }
 
         // Letterbox bars hide anything drawn outside the game view.
         let sw = screen_width();
         let sh = screen_height();
         let border = opaque(g_border);
-        let end = origin + view * scale;
+        let end = origin + present_size;
         draw_rectangle(0.0, 0.0, sw, origin.y, border);
         draw_rectangle(0.0, end.y, sw, sh - end.y, border);
         draw_rectangle(0.0, 0.0, origin.x, sh, border);
@@ -1268,13 +1374,13 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         fit: opts.fit,
         show_hidden: opts.show_hidden,
         debug_boxes: false,
-        hud: opts.screenshot.is_none(),
+        hud: opts.screenshot.is_none() && opts.settings.hud,
         running: opts.run_events,
         tick_acc: 0.0,
         input: Input::default(),
         layer_off: Vec::new(),
         drag_from: None,
-        settings: settings::Settings::load(&save_root),
+        settings: opts.settings.clone(),
         fullscreen: false,
         log: crate::log::Log::open(&save_root),
         logged_unimplemented: 0,

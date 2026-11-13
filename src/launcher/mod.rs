@@ -4,6 +4,7 @@
 pub mod library;
 pub mod playlog;
 
+use crate::render::settings::{Filter, Scaling, Settings};
 use library::Entry;
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -87,6 +88,8 @@ struct Launcher {
     next_log_check: f64,
     /// Showing the play log instead of the library.
     show_log: bool,
+    /// Settings panel open for a game: (library index, its settings).
+    settings_panel: Option<(usize, Settings)>,
 }
 
 impl Launcher {
@@ -111,6 +114,7 @@ impl Launcher {
             log_stamp: None,
             next_log_check: 0.0,
             show_log: false,
+            settings_panel: None,
         }
     }
 
@@ -327,6 +331,12 @@ impl Launcher {
         // Game list (or the play log).
         let top = HEADER_H;
         let bottom = sh - STATUS_H;
+        if self.settings_panel.is_some() {
+            self.draw_settings_panel(top, bottom);
+            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
+            self.draw_status(sh);
+            return;
+        }
         if self.show_log {
             self.draw_log(top, bottom);
             draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
@@ -372,7 +382,7 @@ impl Launcher {
                 let stats = format!("Played {}  -  last {last}", playlog::duration(*secs));
                 self.text(&stats, row.x + 76.0 + tw + 16.0, row.y + 30.0, 15, ACCENT);
             }
-            let max_w = row.w - 76.0 - 410.0;
+            let max_w = row.w - 76.0 - 460.0;
             while self.text_width(&p, 14) > max_w && p.chars().count() > 8 {
                 p = format!("...{}", p.chars().skip(4).collect::<String>());
             }
@@ -381,12 +391,15 @@ impl Launcher {
             let by = row.y + (row.h - 34.0) / 2.0;
             let remove = Rect::new(row.x + row.w - 12.0 - 40.0, by, 40.0, 34.0);
             let mods = Rect::new(remove.x - 8.0 - 70.0, by, 70.0, 34.0);
-            let shortcut = Rect::new(mods.x - 8.0 - 150.0, by, 150.0, 34.0);
+            let settings = Rect::new(mods.x - 8.0 - 90.0, by, 90.0, 34.0);
+            let shortcut = Rect::new(settings.x - 8.0 - 100.0, by, 100.0, 34.0);
             let play = Rect::new(shortcut.x - 8.0 - 100.0, by, 100.0, 34.0);
             let in_list = mouse.y > top && mouse.y < bottom;
             if self.button(play, "Play", true, !missing) && in_list {
                 action = Some((i, 0));
-            } else if self.button(shortcut, "Desktop shortcut", false, !missing) && in_list {
+            } else if self.button(settings, "Settings", false, true) && in_list {
+                action = Some((i, 4));
+            } else if self.button(shortcut, "Shortcut", false, !missing) && in_list {
                 action = Some((i, 1));
             } else if self.button(mods, "Mods", false, true) && in_list {
                 action = Some((i, 3));
@@ -414,6 +427,11 @@ impl Launcher {
                     Err(err) => self.say(format!("Could not create the shortcut: {err}")),
                 }
             }
+            Some((i, 4)) => {
+                let path = self.entries[i].path.clone();
+                let legacy = crate::runtime::files::default_save_root(&self.entries[i].title);
+                self.settings_panel = Some((i, Settings::for_game(&path, Some(&legacy))));
+            }
             Some((i, 3)) => {
                 let path = self.entries[i].path.clone();
                 match crate::mods::Mods::ensure_dir(&path) {
@@ -434,6 +452,71 @@ impl Launcher {
         }
 
         self.draw_status(sh);
+    }
+
+    /// A row of mutually exclusive choices; returns the index clicked, if any.
+    fn choice_row(&self, y: f32, label: &str, hint: &str, options: &[&str], selected: usize) -> Option<usize> {
+        let x0 = 48.0;
+        self.text(label, x0, y + 23.0, 19, TEXT);
+        self.text(hint, x0, y + 46.0, 14, MUTED);
+        let mut x = 400.0;
+        let mut clicked = None;
+        for (k, o) in options.iter().enumerate() {
+            let w = self.text_width(o, 17) + 30.0;
+            if self.button(Rect::new(x, y + 6.0, w, 32.0), o, k == selected, true) {
+                clicked = Some(k);
+            }
+            x += w + 8.0;
+        }
+        clicked
+    }
+
+    fn draw_settings_panel(&mut self, top: f32, _bottom: f32) {
+        let sw = screen_width();
+        let Some((i, mut s)) = self.settings_panel.clone() else { return };
+        let title = self.entries.get(i).map(|e| e.title.clone()).unwrap_or_default();
+        draw_rectangle(16.0, top + 4.0, sw - 32.0, 420.0, CARD);
+        self.text(&format!("Settings - {title}"), 36.0, top + 40.0, 24, TEXT);
+        self.text("Saved right away; applied the next time the game starts. In game: F11 fullscreen, F9 filter, F10 scaling, F1 HUD.", 36.0, top + 64.0, 14, MUTED);
+        let mut y = top + 80.0;
+        let mut changed = false;
+        let fs = match s.fullscreen {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        };
+        if let Some(k) = self.choice_row(y, "Fullscreen", "Start in fullscreen or in a window", &["Game default", "On", "Off"], fs) {
+            s.fullscreen = [None, Some(true), Some(false)][k];
+            changed = true;
+        }
+        y += 64.0;
+        if let Some(k) = self.choice_row(y, "Window size", "Size of the window when not fullscreen", &["Auto", "1x", "2x", "3x"], s.window_scale.min(3) as usize) {
+            s.window_scale = k as u8;
+            changed = true;
+        }
+        y += 64.0;
+        let sc = Scaling::ALL.iter().position(|v| *v == s.scaling).unwrap_or(0);
+        if let Some(k) = self.choice_row(y, "Scaling", "Fit keeps the shape; Integer keeps pixels crisp", &["Fit", "Integer", "Stretch"], sc) {
+            s.scaling = Scaling::ALL[k];
+            changed = true;
+        }
+        y += 64.0;
+        let fi = Filter::ALL.iter().position(|v| *v == s.filter).unwrap_or(1);
+        if let Some(k) = self.choice_row(y, "Upscaling", "How the picture is enlarged: Enhanced is sharpest", &["Sharp pixels", "Smooth", "Enhanced"], fi) {
+            s.filter = Filter::ALL[k];
+            changed = true;
+        }
+        y += 64.0;
+        if let Some(k) = self.choice_row(y, "Debug HUD", "Frame / tick overlay at start (F1 toggles)", &["Off", "On"], s.hud as usize) {
+            s.hud = k == 1;
+            changed = true;
+        }
+        if changed {
+            s.save();
+        }
+        let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
+        let close = self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape);
+        self.settings_panel = if close { None } else { Some((i, s)) };
     }
 
     fn draw_status(&self, sh: f32) {

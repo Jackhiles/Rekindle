@@ -204,6 +204,12 @@ fn main() -> Result<()> {
         mute: cli.mute,
         // Screenshot / scripted runs are tests: keep them away from the player's saves.
         game_path: Some(game_path.clone()),
+        settings: if cli.screenshot.is_some() {
+            render::settings::Settings::default()
+        } else {
+            let legacy = rekindle::runtime::files::default_save_root(&game.name);
+            render::settings::Settings::for_game(&game_path, Some(&legacy))
+        },
         save_dir: cli.save_dir.or_else(|| {
             cli.screenshot
                 .as_ref()
@@ -224,7 +230,7 @@ fn main() -> Result<()> {
             None => None,
         },
     };
-    let conf = render::window_conf(&game);
+    let conf = render::window_conf(&game, &opts.settings);
     macroquad::Window::from_config(conf, render::run(game, opts));
     Ok(())
 }

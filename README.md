@@ -91,8 +91,10 @@ collisions still use the original images, so gameplay is unchanged.
 ### Display and errors
 - **Fullscreen**: games that ask for fullscreen at start get it; `--fullscreen` / `--windowed` override that, and
   Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `rekindle.ini` in the save folder.
-- **Scaling**: the game keeps its aspect ratio (black bars fill the rest). When the picture is scaled, the finished
-  frame is upscaled smoothly; F9 switches to sharp pixels (also remembered).
+- **Per-game settings** (launcher: **Settings** on a game; stored in `%APPDATA%\Rekindle\settings\<game>.ini`):
+  fullscreen (game default / on / off), window size (auto, 1x-3x), scaling (fit keeps the shape, integer keeps pixels
+  crisp, stretch fills the window), upscaling filter (sharp pixels, smooth, or enhanced bicubic), and whether the debug
+  HUD shows at start. In game: F9 cycles the filter, F10 the scaling, F11 / Alt+Enter toggles fullscreen.
 - **Errors**: if something inside the game logic fails, the tick is skipped, a red notice appears and the details go to
   `rekindle.log` in the save folder; the game pauses after repeated failures. Unsupported features hit during play are
   logged there too, which makes the file useful for bug reports.
@@ -107,7 +109,7 @@ Many games cover a frame with a fade or transition object that events remove. Wh
 | F3 | single tick while paused |
 | F5 | restart frame |
 | F6 / F7 / F8 | bounding boxes / show hidden objects / fit whole frame |
-| F9 | smooth / sharp scaling |
+| F9 / F10 | upscaling filter / scaling mode |
 | F11 or Alt+Enter | fullscreen / window |
 | Ctrl+PgUp / Ctrl+PgDn | previous / next frame |
 | Ctrl+1 ... Ctrl+0 | toggle layers 1-10 |
