@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release.
+# Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release, or
+# one like v0.2.0-test1 for a pre-release test build.
 # The launcher's updater downloads the files named below.
 on:
   push:
@@ -63,3 +64,5 @@ jobs:
             Rekindle-x86_64.AppImage
           fail_on_unmatched_files: false
           generate_release_notes: true
+          # Tags with a dash (v0.1.2-test1) are test builds: pre-releases, which the updater ignores.
+          prerelease: ${{ contains(github.ref_name, '-') }}
