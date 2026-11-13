@@ -6,6 +6,7 @@
 
 mod clock;
 mod gsx;
+mod inert;
 mod ini;
 
 use super::files::SaveFs;
@@ -37,6 +38,9 @@ pub fn create(name: &str, shared: &Shared) -> Option<Box<dyn Extension>> {
         "kcini" => Some(Box::new(ini::Ini::default())),
         "gstorex" => Some(Box::new(gsx::GlobalStore::with_store(shared.gsx.clone()))),
         "kcclock" => Some(Box::new(clock::Clock)),
+        "kcwctrl" | "drpc" | "hiddenproperties" | "android" | "inappandroid" | "xna" => {
+            Some(Box::new(inert::Inert))
+        }
         _ => None,
     }
 }

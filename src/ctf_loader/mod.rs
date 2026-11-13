@@ -160,6 +160,9 @@ impl GameData {
         } else {
             chunk::key_bytes(&[&editor_filename, &name, &copyright])
         };
+        // The runtime uses at most 128 key bytes (long titles / paths are cut off).
+        let mut key = key;
+        key.truncate(128);
         let dec = ChunkDecoder::new(build, Some(&key)).with_old(old);
         let encrypted = chunks.iter().any(RawChunk::is_encrypted);
 
@@ -194,6 +197,18 @@ impl GameData {
                     warnings.push(format!("object definitions: {e:#}"));
                     Vec::new()
                 }),
+            None if find(id::OBJECT_HEADERS_2).is_some() => {
+                let get = |cid: u16, w: &mut Vec<String>| decode_id(cid, w).map(|b| b.to_vec()).unwrap_or_default();
+                let headers = get(id::OBJECT_HEADERS_2, &mut warnings);
+                let names = get(id::OBJECT_NAMES_2, &mut warnings);
+                let props = get(id::OBJECT_PROPERTIES_2, &mut warnings);
+                let offsets = get(id::OBJECT_PROPERTY_OFFSETS_2, &mut warnings);
+                objects::parse_split_objects(&headers, &names, &props, &offsets, unicode, build, &mut warnings)
+                    .unwrap_or_else(|e| {
+                        warnings.push(format!("object definitions: {e:#}"));
+                        Vec::new()
+                    })
+            }
             None => {
                 if find(id::FRAME_ITEMS_2).is_some() {
                     warnings.push("FrameItems2 (0x223F) object layout not supported yet".into());

@@ -33,6 +33,12 @@ pub mod id {
     pub const GLOBAL_VALUE_NAMES: u16 = 0x223C;
     pub const GLOBAL_STRING_NAMES: u16 = 0x223D;
     pub const FRAME_ITEMS_2: u16 = 0x223F;
+    /// Newer 2.5+ builds split the object list: 16-byte headers, names, and
+    /// zlib-packed property blocks found through an offset table.
+    pub const OBJECT_HEADERS_2: u16 = 0x2253;
+    pub const OBJECT_NAMES_2: u16 = 0x2254;
+    pub const OBJECT_PROPERTIES_2: u16 = 0x2256;
+    pub const OBJECT_PROPERTY_OFFSETS_2: u16 = 0x2257;
     pub const EXE_ONLY: u16 = 0x2240;
     pub const PROTECTION: u16 = 0x2242;
     pub const SHADERS: u16 = 0x2243;
@@ -109,10 +115,11 @@ pub fn chunk_name(cid: u16) -> &'static str {
         0x224D => "FrameOffsets",
         0x224F => "AdditionalFrameInfo",
         0x2251 => "TitleText2",
-        0x2253 => "ObjectProperties2",
-        0x2254 => "GlobalEventInfo",
-        0x2256 => "ObjectHeaders2",
-        0x2257 => "ObjectNames2",
+        0x2253 => "ObjectHeaders2",
+        0x2254 => "ObjectNames2",
+        0x2255 => "ObjectShaders2",
+        0x2256 => "ObjectProperties2",
+        0x2257 => "ObjectPropertyOffsets2",
         0x2258 => "ObjectShaders",
         0x3333 => "Frame",
         0x3334 => "FrameHeader",
@@ -198,6 +205,57 @@ pub fn read_chunk_list(blob: &Blob, pos: usize) -> Result<(Vec<RawChunk>, usize)
 }
 
 /// Inflate a zlib stream, expecting roughly `size_hint` bytes of output.
+/// Decompress one LZ4 block (no frame header) into at most `size` bytes.
+pub fn lz4_block(src: &[u8], size: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(size);
+    let mut i = 0;
+    let byte = |i: usize| src.get(i).copied().context("LZ4 data truncated");
+    while i < src.len() && out.len() < size {
+        let token = byte(i)?;
+        i += 1;
+        let mut lit = (token >> 4) as usize;
+        if lit == 15 {
+            loop {
+                let b = byte(i)?;
+                i += 1;
+                lit += b as usize;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        out.extend_from_slice(src.get(i..i + lit).context("LZ4 literals truncated")?);
+        i += lit;
+        if i >= src.len() || out.len() >= size {
+            break;
+        }
+        let offset = u16::from_le_bytes([byte(i)?, byte(i + 1)?]) as usize;
+        i += 2;
+        if offset == 0 || offset > out.len() {
+            bail!("bad LZ4 match offset {offset}");
+        }
+        let mut len = (token & 15) as usize;
+        if len == 15 {
+            loop {
+                let b = byte(i)?;
+                i += 1;
+                len += b as usize;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        len += 4;
+        let start = out.len() - offset;
+        for k in 0..len {
+            let b = out[start + k];
+            out.push(b);
+        }
+    }
+    out.truncate(size);
+    Ok(out)
+}
+
 pub fn inflate(data: &[u8], size_hint: usize) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(size_hint.min(256 << 20));
     ZlibDecoder::new(data)

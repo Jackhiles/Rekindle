@@ -191,6 +191,73 @@ pub fn parse_frame_items(
     Ok(out)
 }
 
+/// The split object list of newer 2.5+ builds (see [`id::OBJECT_HEADERS_2`]).
+pub fn parse_split_objects(
+    headers: &[u8],
+    names: &[u8],
+    props: &[u8],
+    offsets: &[u8],
+    unicode: bool,
+    build: u32,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<ObjectInfo>> {
+    let count = headers.len() / 16;
+    // Names: consecutive NUL-terminated strings in object order.
+    let mut name_list = Vec::with_capacity(count);
+    let mut p = 0;
+    while p < names.len() && name_list.len() < count {
+        let s = decode_cstr(&names[p..], unicode);
+        let units = if unicode { s.encode_utf16().count() + 1 } else { s.len() + 1 };
+        p += units * if unicode { 2 } else { 1 };
+        name_list.push(s);
+    }
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let mut r = ByteReader::new(&headers[i * 16..i * 16 + 16]);
+        let handle = r.read_u16()?;
+        let type_id = r.read_i16()?;
+        let flags = r.read_u16()?;
+        let _reserved = r.read_u16()?;
+        let ink_effect = r.read_u32()?;
+        let ink_effect_param = r.read_u32()?;
+        let mut obj = ObjectInfo {
+            handle,
+            type_id,
+            kind: ObjectKind::from_type_id(type_id),
+            name: name_list.get(i).cloned().unwrap_or_default(),
+            flags,
+            ink_effect,
+            ink_effect_param,
+            properties: None,
+            props: ObjectProperties::None,
+        };
+        let block = offsets
+            .get(i * 4..i * 4 + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .and_then(|o| {
+                let mut r = ByteReader::new(props);
+                r.seek(o).ok()?;
+                let size = r.read_u32().ok()? as usize;
+                let comp = r.read_u32().ok()? as usize;
+                let data = r.read_bytes(comp.min(r.remaining())).ok()?;
+                super::chunk::inflate(data, size).ok()
+            });
+        match block {
+            Some(b) => {
+                let b = Blob::new(b);
+                match parse_properties(type_id, &b, build, unicode, false) {
+                    Ok(p) => obj.props = p,
+                    Err(e) => warnings.push(format!("object '{}' properties: {e:#}", obj.name)),
+                }
+                obj.properties = Some(b);
+            }
+            None => warnings.push(format!("object '{}': no property block", obj.name)),
+        }
+        out.push(obj);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtensionInfo {
     pub handle: i16,

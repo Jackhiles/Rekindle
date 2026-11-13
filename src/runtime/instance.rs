@@ -33,6 +33,8 @@ pub struct MoveState {
     pub index: usize,
     pub speed: f64,
     pub forced_speed: Option<f64>,
+    /// "Set maximum speed": caps the movement's speed.
+    pub max_speed: Option<f64>,
     pub stopped: bool,
     pub reversed: bool,
     // Path movement.
@@ -265,7 +267,8 @@ impl Instance {
         if self.movement.stopped {
             0.0
         } else {
-            self.movement.forced_speed.unwrap_or(self.movement.speed)
+            let s = self.movement.forced_speed.unwrap_or(self.movement.speed);
+            self.movement.max_speed.map_or(s, |m| s.min(m))
         }
     }
 

@@ -216,6 +216,9 @@ pub fn parse_events(data: &[u8], unicode: bool, old: bool) -> Result<Events> {
     let size = r.read_u32()? as usize;
     let end = (r.pos() + size).min(data.len());
     let mut groups = Vec::new();
+    if !old && is_compact(data, r.pos(), end) {
+        return parse_compact_groups(data, r.pos(), end, unicode);
+    }
     while r.pos() < end {
         let gstart = r.pos();
         let gsize = (r.read_i16()? as i32).unsigned_abs() as usize;
@@ -253,6 +256,207 @@ pub fn parse_events(data: &[u8], unicode: bool, old: bool) -> Result<Events> {
         r.seek(gend.min(end))?;
     }
     Ok(Events { groups })
+}
+
+// ---------- compact event format (newer Fusion 2.5+ builds) ----------
+//
+// Group header: `size i16 (negative), n_conditions u8, n_actions u8, flags u16, id u16`.
+// ACE: `size u16, object_type i16, num i16`, then `object_info u16` for objects and the
+// player type (-7), then `flags u8` (bit 7 = negated) and `n_params u8`, then the usual
+// parameters. A few common "value vs constant" ACEs have no parameters and store their
+// operands inline instead; those are turned back into ordinary parameters here.
+
+fn compact_has_oi(object_type: i16) -> bool {
+    object_type >= 0 || object_type == -7
+}
+
+/// End of a compact ACE's own data (header plus parameters), if it looks valid.
+fn compact_ace_end(data: &[u8], pos: usize) -> Option<(usize, usize)> {
+    let size = u16::from_le_bytes([*data.get(pos)?, *data.get(pos + 1)?]) as usize;
+    let ot = i16::from_le_bytes([*data.get(pos + 2)?, *data.get(pos + 3)?]);
+    let head = if compact_has_oi(ot) { 10 } else { 8 };
+    let n = *data.get(pos + head - 1)? as usize;
+    let mut p = pos + head;
+    for _ in 0..n {
+        let psz = u16::from_le_bytes([*data.get(p)?, *data.get(p + 1)?]) as usize;
+        if psz < 4 {
+            return None;
+        }
+        p += psz;
+    }
+    (size >= head && p <= pos + size).then_some((pos + size, p))
+}
+
+/// Do all groups in `start..end` add up under the compact layout (and not all under the
+/// classic one)? Single groups can fit both by coincidence.
+fn is_compact(data: &[u8], start: usize, end: usize) -> bool {
+    fits_compact(data, start, end) && !fits_classic(data, start, end)
+}
+
+fn fits_classic(data: &[u8], start: usize, end: usize) -> bool {
+    let mut g = start;
+    while g + 4 <= end {
+        let gsize = (i16::from_le_bytes([data[g], data[g + 1]]) as i32).unsigned_abs() as usize;
+        let n = data[g + 2] as usize + data[g + 3] as usize;
+        if gsize == 0 || ![14usize, 16].iter().any(|&h| ace_chain_end(data, g + h, n, false) == Some(g + gsize)) {
+            return false;
+        }
+        g += gsize;
+    }
+    true
+}
+
+fn fits_compact(data: &[u8], start: usize, end: usize) -> bool {
+    let mut g = start;
+    let mut checked = 0;
+    while g < end {
+        let Some(&[a, b, nc, na]) = data.get(g..g + 4).map(|s| <&[u8; 4]>::try_from(s).unwrap()) else {
+            return false;
+        };
+        let gsize = (i16::from_le_bytes([a, b]) as i32).unsigned_abs() as usize;
+        if gsize < 8 {
+            return false;
+        }
+        let mut q = g + 8;
+        for _ in 0..nc as usize + na as usize {
+            match compact_ace_end(data, q) {
+                Some((next, _)) => q = next,
+                None => return false,
+            }
+        }
+        if q != g + gsize {
+            return false;
+        }
+        g += gsize;
+        checked += 1;
+    }
+    checked > 0
+}
+
+fn parse_compact_groups(data: &[u8], start: usize, end: usize, unicode: bool) -> Result<Events> {
+    let mut groups = Vec::new();
+    let mut g = start;
+    while g + 8 <= end {
+        let mut r = ByteReader::new(data);
+        r.seek(g)?;
+        let gsize = (r.read_i16()? as i32).unsigned_abs() as usize;
+        if gsize == 0 {
+            bail!("zero-sized event group at {g:#x}");
+        }
+        let nc = r.read_u8()? as usize;
+        let na = r.read_u8()? as usize;
+        let flags = r.read_u16()?;
+        let mut q = g + 8;
+        let mut conditions = Vec::with_capacity(nc);
+        let mut actions = Vec::with_capacity(na);
+        for i in 0..nc + na {
+            let (ace, next) = parse_compact_ace(data, q, i < nc, unicode)?;
+            q = next;
+            if i < nc {
+                conditions.push(ace);
+            } else {
+                actions.push(ace);
+            }
+        }
+        groups.push(EventGroup { flags, conditions, actions });
+        g += gsize;
+    }
+    Ok(Events { groups })
+}
+
+fn long_expr(comparison: Comparison, v: Inline) -> Param {
+    let (num, value) = match v {
+        Inline::Int(i) => (0, TokenValue::Long(i)),
+        Inline::Float(f) => (23, TokenValue::Double(f)),
+    };
+    Param::Expression {
+        comparison,
+        tokens: vec![Token { object_type: -1, num, object_info: 0, object_info_list: 0, value }],
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Inline {
+    Int(i32),
+    Float(f64),
+}
+
+fn parse_compact_ace(data: &[u8], pos: usize, condition: bool, unicode: bool) -> Result<(Ace, usize)> {
+    let mut r = ByteReader::new(data);
+    r.seek(pos)?;
+    let size = r.read_u16()? as usize;
+    let object_type = r.read_i16()?;
+    let num = r.read_i16()?;
+    let object_info = if compact_has_oi(object_type) { r.read_u16()? } else { 0 };
+    let f = r.read_u8()?;
+    let n = r.read_u8()? as usize;
+    let mut ace = Ace {
+        object_type,
+        num,
+        object_info,
+        object_info_list: -1,
+        flags: f & 0x7F,
+        other_flags: if f & 0x80 != 0 { ACE_NOT } else { 0 },
+        def_type: 0,
+        identifier: 0,
+        params: Vec::new(),
+    };
+    let end = pos + size;
+    for _ in 0..n {
+        let pstart = r.pos();
+        if pstart + 4 > end {
+            break;
+        }
+        let psize = r.read_u16()? as usize;
+        let code = r.read_i16()?;
+        let body = data.get(pstart + 4..pstart + psize.max(4)).unwrap_or_default();
+        let value = parse_param(code, body, unicode, false).unwrap_or_else(|_| Param::Raw(body.to_vec()));
+        ace.params.push(ParamEntry { code, value });
+        r.seek(pstart + psize.max(4))?;
+    }
+    // Inline operands: `index u32`, [`comparison u16`], then an i32 (or f64) constant.
+    let inline = data.get(r.pos()..end).unwrap_or_default();
+    if n == 0 && inline.len() >= 8 {
+        let index = i32::from_le_bytes(inline[0..4].try_into().unwrap());
+        let value_at = |o: usize| -> Inline {
+            if inline.len() >= o + 8 && inline.len() - o == 8 {
+                Inline::Float(f64::from_le_bytes(inline[o..o + 8].try_into().unwrap()))
+            } else {
+                Inline::Int(i32::from_le_bytes(inline[o..o + 4].try_into().unwrap()))
+            }
+        };
+        let global_index = || ParamEntry {
+            code: 22,
+            value: long_expr(Comparison::Equal, Inline::Int(index)),
+        };
+        let alt_index = || ParamEntry { code: 50, value: Param::Short(index as i16) };
+        match (object_type, num, condition) {
+            // Compare global value with a constant; the comparison is in the number.
+            (-1, -39..=-28, true) => {
+                let cmp = Comparison::from_i16(((-28 - num) % 6) as i16);
+                ace.params.push(global_index());
+                ace.params.push(ParamEntry { code: 23, value: long_expr(cmp, value_at(4)) });
+            }
+            // Set / add / subtract a global value.
+            (-1, 27..=38, false) => {
+                ace.params.push(global_index());
+                ace.params.push(ParamEntry { code: 22, value: long_expr(Comparison::Equal, value_at(4)) });
+            }
+            // Compare an alterable value with a constant.
+            (t, -42, true) if t >= 2 && inline.len() >= 10 => {
+                let cmp = Comparison::from_i16(i16::from_le_bytes([inline[4], inline[5]]));
+                ace.params.push(alt_index());
+                ace.params.push(ParamEntry { code: 23, value: long_expr(cmp, value_at(6)) });
+            }
+            // Set / add / subtract an alterable value.
+            (t, 31..=33, false) if t >= 2 => {
+                ace.params.push(alt_index());
+                ace.params.push(ParamEntry { code: 22, value: long_expr(Comparison::Equal, value_at(4)) });
+            }
+            _ => ace.params.push(ParamEntry { code: 0, value: Param::Raw(inline.to_vec()) }),
+        }
+    }
+    Ok((ace, end))
 }
 
 fn ace_chain_end(data: &[u8], mut pos: usize, n: usize, old: bool) -> Option<usize> {

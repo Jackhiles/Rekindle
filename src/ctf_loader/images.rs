@@ -3,7 +3,7 @@
 //! Bank: `count: u32`, then per image `handle: u32, decompressed: u32, compressed: u32,
 //! zlib[compressed]`. The inflated block is a 32-byte header followed by pixel data.
 
-use super::chunk::{inflate, inflate_prefix};
+use super::chunk::{inflate, inflate_prefix, lz4_block};
 use super::reader::{Blob, ByteReader};
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
@@ -37,6 +37,8 @@ pub struct ImageEntry {
     /// Already-decompressed block (1.5 data is decompressed while loading).
     decoded: Option<Blob>,
     header_size: usize,
+    /// Newer 2.5+ banks: `compressed` is `[size u32][LZ4 block]` holding only the pixels.
+    lz4: bool,
     /// Colours for 8-bit palette images.
     palette: Option<std::sync::Arc<Vec<[u8; 4]>>>,
 }
@@ -71,6 +73,9 @@ impl ImageBank {
         let palette = palette.map(std::sync::Arc::new);
         if old {
             return Self::parse_old(bank, palette);
+        }
+        if is_lz4_bank(bank) {
+            return Self::parse_lz4(bank, build);
         }
         let mut r = ByteReader::new(bank);
         let count = r.read_u32()? as usize;
@@ -114,6 +119,7 @@ impl ImageBank {
                 compressed,
                 decoded: None,
                 header_size: IMAGE_HEADER_SIZE,
+                lz4: false,
                 palette: palette.clone(),
             });
         }
@@ -122,6 +128,55 @@ impl ImageBank {
             .enumerate()
             .map(|(i, e)| (e.handle, i))
             .collect();
+        Ok(Self { images, by_handle })
+    }
+
+    /// Newer 2.5+ banks: per image an uncompressed 40-byte header (`handle u32,
+    /// checksum i32, size u32, references i32, block_size u32, width, height, mode u8,
+    /// flags u8, reserved u16, hotspot, action point, transparent colour`), then
+    /// `block_size` bytes: `pixels_size u32` and an LZ4 block of BGRA pixels.
+    fn parse_lz4(bank: &Blob, build: u32) -> Result<Self> {
+        let mut r = ByteReader::new(bank);
+        let count = r.read_u32()? as usize;
+        let mut images = Vec::with_capacity(count);
+        for i in 0..count {
+            let mut handle = r.read_u32()?;
+            if build >= 284 {
+                handle = handle.saturating_sub(1);
+            }
+            let _checksum = r.read_i32()?;
+            let data_size = r.read_u32()?;
+            let _references = r.read_i32()?;
+            let block = r.read_u32()? as usize;
+            let width = r.read_u16()?;
+            let height = r.read_u16()?;
+            let graphic_mode = r.read_u8()?;
+            let flags = r.read_u8()?;
+            let _reserved = r.read_u16()?;
+            let hotspot = (r.read_i16()?, r.read_i16()?);
+            let action_point = (r.read_i16()?, r.read_i16()?);
+            let transparent = r.read_color()?;
+            let start = r.pos();
+            r.skip(block).with_context(|| format!("image #{i} (handle {handle}) truncated"))?;
+            images.push(ImageEntry {
+                handle,
+                width,
+                height,
+                graphic_mode,
+                flags,
+                hotspot,
+                action_point,
+                transparent,
+                data_size,
+                decompressed_size: 0,
+                compressed: bank.slice(start..start + block)?,
+                decoded: None,
+                header_size: 0,
+                lz4: true,
+                palette: None,
+            });
+        }
+        let by_handle = images.iter().enumerate().map(|(i, e)| (e.handle, i)).collect();
         Ok(Self { images, by_handle })
     }
 
@@ -163,6 +218,7 @@ impl ImageBank {
                 compressed: Blob::new(Vec::new()),
                 decoded: Some(Blob::new(raw)),
                 header_size,
+                lz4: false,
                 palette: palette.clone(),
             });
         }
@@ -253,6 +309,20 @@ impl ImageEntry {
     }
 
     pub fn decode_rgba(&self) -> Result<RgbaImage> {
+        if self.lz4 {
+            let mut r = ByteReader::new(&self.compressed);
+            let size = r.read_u32()? as usize;
+            let mut data = lz4_block(r.rest(), size)?;
+            let (w, h) = (self.width as usize, self.height as usize);
+            let bpp = if self.graphic_mode == 8 { 4 } else { 3 };
+            data.resize(w * h * bpp, 0);
+            let mut px = vec![0u8; w * h * 4];
+            for (i, p) in data.chunks_exact(bpp).enumerate() {
+                let a = if bpp == 4 { p[3] } else { 255 };
+                px[i * 4..i * 4 + 4].copy_from_slice(&[p[2], p[1], p[0], a]);
+            }
+            return Ok(RgbaImage { width: w as u32, height: h as u32, pixels: px });
+        }
         let raw = match &self.decoded {
             Some(b) => b.to_vec(),
             None => inflate(&self.compressed, self.decompressed_size as usize)?,
@@ -351,6 +421,24 @@ impl ImageEntry {
             pixels: px,
         })
     }
+}
+
+/// Does the bank use the newer layout (uncompressed headers, LZ4 pixels)? The first
+/// entry's block then starts with the pixel count that its header implies.
+fn is_lz4_bank(bank: &[u8]) -> bool {
+    let u32_at = |o: usize| bank.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let u16_at = |o: usize| bank.get(o..o + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()));
+    let (Some(count), Some(block), Some(w), Some(h), Some(&mode), Some(size)) =
+        (u32_at(0), u32_at(20), u16_at(24), u16_at(26), bank.get(28), u32_at(44))
+    else {
+        return false;
+    };
+    let bpp = match mode {
+        8 => 4,
+        4 => 3,
+        _ => return false,
+    };
+    count > 0 && 44 + block as usize <= bank.len() && size as usize == w as usize * h as usize * bpp
 }
 
 #[cfg(test)]

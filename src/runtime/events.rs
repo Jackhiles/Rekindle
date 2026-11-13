@@ -499,6 +499,15 @@ impl Runtime {
                 let (cmp, rhs) = self.param_cmp(c, 1, sel, None);
                 self.global_value(idx).compare(cmp, &rhs)
             }
+            // "Menu option selected": there is no menu bar.
+            (SYS, -14) => false,
+            // "Running on runtime N": this is the Windows runtime (0).
+            (SYS, -40) => match c.params.first().map(|p| &p.value) {
+                Some(Param::Raw(b)) if b.len() >= 4 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) == 0,
+                Some(Param::Int(v)) => *v == 0,
+                Some(Param::Short(v)) => *v == 0,
+                _ => false,
+            },
             (SYS, -12) => match c.params.first().map(|p| &p.value) {
                 Some(Param::GroupPointer { id }) => self.group_enabled(*id as u16),
                 _ => true,
@@ -1241,6 +1250,18 @@ impl Runtime {
             }
             (_, 5) => self.instances[idx].movement.stopped = false,
             (_, 6) => self.instances[idx].movement.speed = self.eval_param(a, 0, sel, cur).as_f64(),
+            (_, 7) => self.instances[idx].movement.max_speed = Some(self.eval_param(a, 0, sel, cur).as_f64()),
+            (_, 8) => {
+                // Wrap around the play area.
+                let (fw, fh) = (self.frame().width as f64, self.frame().height as f64);
+                let inst = &mut self.instances[idx];
+                if fw > 0.0 {
+                    inst.x = inst.x.rem_euclid(fw);
+                }
+                if fh > 0.0 {
+                    inst.y = inst.y.rem_euclid(fh);
+                }
+            }
             (_, 9) | (_, 10) => {
                 let inst = &mut self.instances[idx];
                 inst.anim.dir = (inst.direction() + 16) % 32;

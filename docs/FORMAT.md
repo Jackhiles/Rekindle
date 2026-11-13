@@ -243,3 +243,19 @@ the description is stored, never the font file.
 - `0x223F` FrameItems2 and the `0x2253/0x2256/0x2257` split object chunks (newer/other exporters)
 - palette-based (mode 3) images
 - MFA source files (out of scope)
+
+## Newer Fusion 2.5+ builds (e.g. build 296)
+- **Key**: at most 128 key bytes are used (long titles / paths are cut off).
+- **Objects**: instead of 0x2229, the object list is split: 0x2253 = 16-byte headers (`handle, type, flags,
+  reserved, ink effect u32, ink param u32`), 0x2254 = names (consecutive NUL-terminated strings), 0x2257 = `u32`
+  offsets into 0x2256, where each entry is `size u32, compressed u32, zlib` holding the usual property block.
+- **Images** (0x6666): per image an uncompressed 40-byte header `handle u32, checksum i32, size u32, references
+  i32, block u32, width u16, height u16, mode u8, flags u8, reserved u16, hotspot, action point, transparent`, then
+  `block` bytes: `pixel bytes u32` + an LZ4 block of BGRA pixels (mode 8).
+- **Events**: group header `size i16 (negative), conditions u8, actions u8, flags u16, id u16`. ACE: `size u16,
+  type i16, num i16`, `object_info u16` only for objects (type >= 0) and the player (-7), then `flags u8` (bit 7 =
+  NOT) and `params u8`, then parameters as usual. "Value vs constant" ACEs carry their operands inline instead of
+  parameters: global value compare (-1/-28..-39: `index u32, value i32`, comparison by number), global value
+  set / add / subtract (-1/27..38: `index u32, value i32`), alterable value compare (-42: `index u32, comparison
+  u16, value i32`) and set / add / subtract (31..33: `index u32, value i32`).
+- An `.exe` without game data loads `<name>.dat` next to it ("separate data file" builds).
