@@ -1,0 +1,41 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release.
+# The launcher's updater downloads the files named below.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            built: target/release/rekindle.exe
+            asset: rekindle-windows-x86_64.exe
+          # Ubuntu 22.04's older glibc keeps the binary compatible with SteamOS and most distros.
+          - os: ubuntu-22.04
+            built: target/release/rekindle
+            asset: rekindle-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux libraries (X11, OpenGL, ALSA)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Name the file for the updater
+        shell: bash
+        run: cp "${{ matrix.built }}" "${{ matrix.asset }}"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+          generate_release_notes: true

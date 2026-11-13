@@ -74,6 +74,18 @@ Play time is logged per session in `%APPDATA%\Rekindle\playtime.tsv`; the launch
 play, and **Play log** lists every session. **Open folder** opens the Rekindle folder with saves, the play log and each
 game's `rekindle.log`. A game's own "end application" action closes its window.
 
+### Updates
+Release builds of the launcher check GitHub for a newer release when they start and offer an **Update to vX** button
+(download, swap in, restart). Copies run from a Cargo `target` folder never update themselves; set
+`REKINDLE_NO_UPDATE_CHECK=1` to turn the check off. Releases are built by GitHub Actions when a `v*` tag is pushed
+(see `.github/workflows/release.yml`).
+
+### Linux and Steam Deck
+Download `rekindle-linux-x86_64` from the releases page, make it executable (`chmod +x rekindle-linux-x86_64`) and
+run it; on the Deck, do that in desktop mode and add it to Steam as a non-Steam game to use it in game mode. Steam
+Input's keyboard-and-mouse templates map the Deck's controls for the games. Add games with "Add folder..." (uses the
+desktop's own picker, kdialog or zenity) or `rekindle-linux-x86_64 --add ~/Games`.
+
 ### Mods (replacement packs)
 Images and sounds can be replaced without touching the game. Each game has a mods folder,
 `%APPDATA%\Rekindle\mods\<game file name>\` (the launcher's **Mods** button creates and opens it, with a how-to):

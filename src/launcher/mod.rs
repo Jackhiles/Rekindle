@@ -2,6 +2,53 @@
 //! files with Play, desktop-shortcut and remove buttons. Games run in their own process.
 
 pub mod library;
+pub mod update;
+
+/// File / folder pickers.
+mod dialogs {
+    use std::path::PathBuf;
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn pick_game() -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Choose a Fusion game")
+            .add_filter("Fusion games", &["exe", "ccn", "dat"])
+            .pick_file()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn pick_folder() -> Option<PathBuf> {
+        rfd::FileDialog::new().set_title("Choose a folder with games").pick_folder()
+    }
+
+    /// Ask the desktop's own picker: kdialog (KDE, e.g. Steam Deck desktop mode) or zenity.
+    #[cfg(target_os = "linux")]
+    fn run(kdialog: &[&str], zenity: &[&str]) -> Option<PathBuf> {
+        for (cmd, args) in [("kdialog", kdialog), ("zenity", zenity)] {
+            if let Ok(out) = std::process::Command::new(cmd).args(args).output() {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                return (out.status.success() && !p.is_empty()).then(|| PathBuf::from(p));
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn pick_game() -> Option<PathBuf> {
+        run(
+            &["--title", "Choose a Fusion game", "--getopenfilename", ".", "*.exe *.ccn *.dat"],
+            &["--file-selection", "--title=Choose a Fusion game", "--file-filter=Fusion games | *.exe *.ccn *.dat"],
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn pick_folder() -> Option<PathBuf> {
+        run(
+            &["--title", "Choose a folder with games", "--getexistingdirectory", "."],
+            &["--file-selection", "--directory", "--title=Choose a folder with games"],
+        )
+    }
+}
 pub mod playlog;
 
 use crate::render::settings::{Filter, Scaling, Settings};
@@ -69,6 +116,8 @@ enum Msg {
     Found(Entry),
     Status(String),
     Done(String),
+    UpdateAvailable(update::Release),
+    UpdateInstalled(Result<PathBuf, String>),
 }
 
 struct Launcher {
@@ -90,6 +139,9 @@ struct Launcher {
     show_log: bool,
     /// Settings panel open for a game: (library index, its settings).
     settings_panel: Option<(usize, Settings)>,
+    /// A newer release, once the background check found one.
+    update: Option<update::Release>,
+    updating: bool,
 }
 
 impl Launcher {
@@ -115,7 +167,23 @@ impl Launcher {
             next_log_check: 0.0,
             show_log: false,
             settings_panel: None,
+            update: None,
+            updating: false,
         }
+    }
+
+    /// Look for a newer release in the background (not for developer builds).
+    fn start_update_check(&self) {
+        update::cleanup();
+        if update::is_dev_build() || std::env::var_os("REKINDLE_NO_UPDATE_CHECK").is_some() {
+            return;
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            if let Ok(Some(r)) = update::check() {
+                let _ = tx.send(Msg::UpdateAvailable(r));
+            }
+        });
     }
 
     fn refresh_log(&mut self) {
@@ -288,6 +356,22 @@ impl Launcher {
                     self.busy = None;
                     self.say(s);
                 }
+                Msg::UpdateAvailable(r) => self.update = Some(r),
+                Msg::UpdateInstalled(Ok(exe)) => {
+                    // Start the new version and close this one.
+                    match std::process::Command::new(&exe).spawn() {
+                        Ok(_) => std::process::exit(0),
+                        Err(e) => {
+                            self.updating = false;
+                            self.say(format!("Updated; please restart Rekindle ({e})"));
+                        }
+                    }
+                }
+                Msg::UpdateInstalled(Err(e)) => {
+                    self.updating = false;
+                    self.busy = None;
+                    self.say(format!("Update failed: {e}"));
+                }
             }
         }
     }
@@ -300,7 +384,7 @@ impl Launcher {
         // Header.
         self.text("Rekindle", 24.0, 46.0, 34, TEXT);
         let tw = self.text_width("Rekindle", 34);
-        self.text("Fusion game launcher", 24.0 + tw + 14.0, 46.0, 17, MUTED);
+        self.text(&format!("Fusion game launcher  v{}", update::current_version()), 24.0 + tw + 14.0, 46.0, 17, MUTED);
         let add_folder = Rect::new(sw - 24.0 - 150.0, 20.0, 150.0, 36.0);
         let add_game = Rect::new(add_folder.x - 12.0 - 140.0, 20.0, 140.0, 36.0);
         let log_btn = Rect::new(add_game.x - 12.0 - 120.0, 20.0, 120.0, 36.0);
@@ -313,16 +397,13 @@ impl Launcher {
             self.open_data_folder();
         }
         if self.button(add_game, "Add game...", true, idle) {
-            let picked = rfd::FileDialog::new()
-                .set_title("Choose a Fusion game")
-                .add_filter("Fusion games", &["exe", "ccn", "dat"])
-                .pick_file();
+            let picked = dialogs::pick_game();
             if let Some(f) = picked {
                 self.add_paths(vec![f], "game".into());
             }
         }
         if self.button(add_folder, "Add folder...", false, idle) {
-            if let Some(dir) = rfd::FileDialog::new().set_title("Choose a folder with games").pick_folder() {
+            if let Some(dir) = dialogs::pick_folder() {
                 let files = library::find_games(&dir);
                 self.add_paths(files, "games from folder".into());
             }
@@ -519,7 +600,21 @@ impl Launcher {
         self.settings_panel = if close { None } else { Some((i, s)) };
     }
 
-    fn draw_status(&self, sh: f32) {
+    fn draw_status(&mut self, sh: f32) {
+        // Update offer at the right of the status bar.
+        if let Some(r) = self.update.clone() {
+            let label = if self.updating { format!("Updating to v{}...", r.version) } else { format!("Update to v{}", r.version) };
+            let w = self.text_width(&label, 17) + 30.0;
+            let rect = Rect::new(screen_width() - 16.0 - w, sh - STATUS_H + 2.0, w, STATUS_H - 4.0);
+            if self.button(rect, &label, true, !self.updating) {
+                self.updating = true;
+                self.busy = Some(format!("Downloading Rekindle v{}...", r.version));
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(Msg::UpdateInstalled(update::install(&r)));
+                });
+            }
+        }
         let line = match (&self.busy, &self.status) {
             (Some(b), _) => Some(b.clone()),
             (None, Some((s, until))) if get_time() < *until => Some(s.clone()),
@@ -533,6 +628,7 @@ impl Launcher {
 
 pub async fn run() {
     let mut l = Launcher::new();
+    l.start_update_check();
     loop {
         l.update();
         l.refresh_log();
