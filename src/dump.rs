@@ -155,7 +155,15 @@ pub fn print_info(g: &GameData, verbose: bool) {
                     let names: Vec<String> = c
                         .movements
                         .iter()
-                        .map(|m| format!("{:?}", m.kind).split([' ', '{', '(']).next().unwrap_or("").to_string())
+                        .map(|m| {
+                            let name = format!("{:?}", m.kind).split([' ', '{', '(']).next().unwrap_or("").to_string();
+                            let speed = match &m.kind {
+                                rekindle::ctf_loader::properties::MovementKind::EightDirections { speed, .. }
+                                | rekindle::ctf_loader::properties::MovementKind::Ball { speed, .. } => format!(" speed {speed}"),
+                                _ => String::new(),
+                            };
+                            format!("{name}{speed}{}{}", if m.player > 0 { format!(" p{}", m.player) } else { String::new() }, if m.moving_at_start { "" } else { " stopped" })
+                        })
                         .collect();
                     format!("  [{}]", names.join(", "))
                 }
