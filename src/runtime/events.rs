@@ -15,7 +15,7 @@ use super::{FrameChange, Runtime};
 use crate::ctf_loader::events::{position_flags, Ace, Comparison, EventGroup, Param, Position};
 use crate::ctf_loader::{ObjectKind, ObjectProperties};
 use crate::render::scene::Visual;
-use std::collections::{HashMap, HashSet};
+use crate::fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Selected instance indices per object-info handle (or qualifier).
 pub type Sel = HashMap<u16, Vec<usize>>;
@@ -71,6 +71,79 @@ impl CollisionShape {
             .as_ref()
             .is_none_or(|m| m.solid(lx as usize, ly as usize))
     }
+}
+
+/// How one shape covers the pixel grid when it isn't rotated or scaled: pixel (x, y) of
+/// the frame (sampled at its centre) maps to mask column x + kx and row y + ky.
+struct GridShape<'a> {
+    /// Frame pixel ranges it can cover.
+    cols: (i64, i64),
+    rows: (i64, i64),
+    /// Mask and the frame-to-mask offset (None: solid everywhere in range).
+    mask: Option<(&'a super::Mask, i64, i64)>,
+}
+
+impl CollisionShape {
+    fn grid(&self) -> Option<GridShape<'_>> {
+        // Pixel centres x + 0.5 inside [a, b): x in [ceil(a - 0.5), ceil(b - 0.5)).
+        let span = |a: f64, b: f64| ((a - 0.5).ceil() as i64, (b - 0.5).ceil() as i64);
+        match &self.local {
+            None => Some(GridShape { cols: span(self.x, self.x + self.w), rows: span(self.y, self.y + self.h), mask: None }),
+            Some(l) if l.scale == (1.0, 1.0) && l.sin == 0.0 && l.cos == 1.0 => {
+                // Column = floor(x + 0.5 - l.x + hot.x) = x + floor(0.5 - l.x + hot.x).
+                let kx = (0.5 - l.x + l.hot.0).floor() as i64;
+                let ky = (0.5 - l.y + l.hot.1).floor() as i64;
+                let (w, h) = (l.size.0 as i64, l.size.1 as i64);
+                Some(GridShape {
+                    cols: (-kx, w - kx),
+                    rows: (-ky, h - ky),
+                    mask: l.mask.as_deref().map(|m| (m, kx, ky)),
+                })
+            }
+            Some(_) => None,
+        }
+    }
+}
+
+/// Exact overlap of two unrotated, unscaled shapes, 64 pixels at a time; None when either
+/// is rotated or scaled (the caller samples pixel by pixel then).
+fn overlap_unrotated(a: &CollisionShape, b: &CollisionShape, x0: f64, y0: f64, x1: f64, y1: f64) -> Option<bool> {
+    let (ga, gb) = (a.grid()?, b.grid()?);
+    let c0 = (x0.floor() as i64).max(ga.cols.0).max(gb.cols.0);
+    let c1 = (x1.ceil() as i64).min(ga.cols.1).min(gb.cols.1);
+    let r0 = (y0.floor() as i64).max(ga.rows.0).max(gb.rows.0);
+    let r1 = (y1.ceil() as i64).min(ga.rows.1).min(gb.rows.1);
+    if c0 >= c1 || r0 >= r1 {
+        return Some(false);
+    }
+    for y in r0..r1 {
+        let hit = match (ga.mask, gb.mask) {
+            (None, None) => true,
+            (Some((m, kx, ky)), None) | (None, Some((m, kx, ky))) => {
+                m.row_chunks((y + ky) as usize, (c0 + kx) as usize, (c1 + kx) as usize, |_, bits| bits != 0)
+            }
+            (Some((ma, ax, ay)), Some((mb, bx, by))) => {
+                let (rb, sb) = ((y + by) as usize, (c0 + bx) as usize);
+                ma.row_chunks((y + ay) as usize, (c0 + ax) as usize, (c1 + ax) as usize, |off, bits| {
+                    let n = (c1 - c0) as usize - off;
+                    bits & mb_bits(mb, rb, sb + off, n.min(64)) != 0
+                })
+            }
+        };
+        if hit {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+fn mb_bits(m: &super::Mask, row: usize, col: usize, n: usize) -> u64 {
+    let mut out = 0;
+    m.row_chunks(row, col, col + n, |_, bits| {
+        out = bits;
+        true
+    });
+    out
 }
 
 /// Per-event runtime bookkeeping.
@@ -239,6 +312,9 @@ impl Runtime {
         if sa.local.is_none() && sb.local.is_none() {
             return true;
         }
+        if let Some(hit) = overlap_unrotated(&sa, &sb, x0, y0, x1, y1) {
+            return hit;
+        }
         // Sample pixel centres over the intersection of the two bounding boxes.
         for y in y0.floor() as i64..y1.ceil() as i64 {
             for x in x0.floor() as i64..x1.ceil() as i64 {
@@ -389,7 +465,7 @@ impl Runtime {
                 (None, Some(_)) => continue,
                 (Some(_), None) => continue,
                 (Some(name), Some(c)) => {
-                    let n = self.eval_param(c, 0, &Sel::new(), None).as_string();
+                    let n = self.eval_param(c, 0, &Sel::default(), None).as_string();
                     if !n.eq_ignore_ascii_case(name) {
                         continue;
                     }
@@ -422,9 +498,9 @@ impl Runtime {
         }
         let mut chosen: Option<Sel> = None;
         // Debug: REKINDLE_TRACE=<event number> prints each condition's result.
-        let trace = std::env::var("REKINDLE_TRACE").ok().and_then(|v| v.parse::<usize>().ok()) == Some(gi);
+        let trace = trace_event() == Some(gi);
         for block in &blocks {
-            let mut sel = Sel::new();
+            let mut sel = Sel::default();
             if block.iter().all(|&(ci, c)| {
                 let r = self.eval_condition(gi, ci, c, &mut sel, input);
                 if trace {
@@ -748,29 +824,50 @@ impl Runtime {
                 };
                 let others = self.candidates(other, sel);
                 let edge = c.num == -14;
-                let mut pairs = HashSet::new();
-                for i in self.candidates(oi, sel) {
-                    for &j in &others {
-                        if self.overlaps(i, j) {
-                            pairs.insert((self.instances[i].id, self.instances[j].id));
+                let mine = self.candidates(oi, sel);
+                // Bounding boxes once per instance; only touching boxes get the full test.
+                let boxes = |list: &[usize]| -> Vec<(f64, f64, f64, f64)> {
+                    list.iter().map(|&k| self.bounds_of(k)).collect()
+                };
+                let (mine_b, others_b) = (boxes(&mine), boxes(&others));
+                let mut hit_m = vec![false; mine.len()];
+                let mut hit_o = vec![false; others.len()];
+                // "Collision" (-14) fires only for pairs that weren't touching last time.
+                let mut pairs: Option<HashSet<(u32, u32)>> = edge.then(HashSet::default);
+                for (a_k, (&i, a)) in mine.iter().zip(&mine_b).enumerate() {
+                    for (b_k, (&j, b)) in others.iter().zip(&others_b).enumerate() {
+                        let touching = a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3;
+                        if touching && self.overlaps(i, j) {
+                            match &mut pairs {
+                                Some(p) => {
+                                    p.insert((self.instances[i].id, self.instances[j].id));
+                                }
+                                None => {
+                                    hit_m[a_k] = true;
+                                    hit_o[b_k] = true;
+                                }
+                            }
                         }
                     }
                 }
-                let prev = if edge {
+                if let Some(pairs) = pairs {
                     let st = self.event_state.entry(gi).or_default();
-                    st.collisions.insert(ci, pairs.clone()).unwrap_or_default()
-                } else {
-                    HashSet::new()
-                };
-                let fresh: HashSet<(u32, u32)> = pairs.difference(&prev).copied().collect();
-                let hit_a: HashSet<u32> = fresh.iter().map(|p| p.0).collect();
-                let hit_b: HashSet<u32> = fresh.iter().map(|p| p.1).collect();
-                let r = self.filter(oi, sel, neg, |rt, _, i| hit_a.contains(&rt.instances[i].id));
+                    let prev = st.collisions.insert(ci, pairs.clone()).unwrap_or_default();
+                    for (a_k, &i) in mine.iter().enumerate() {
+                        for (b_k, &j) in others.iter().enumerate() {
+                            let key = (self.instances[i].id, self.instances[j].id);
+                            if pairs.contains(&key) && !prev.contains(&key) {
+                                hit_m[a_k] = true;
+                                hit_o[b_k] = true;
+                            }
+                        }
+                    }
+                }
+                let kept: Vec<usize> = mine.iter().zip(&hit_m).filter(|(_, &h)| h != neg).map(|(&i, _)| i).collect();
+                let r = !kept.is_empty();
+                sel.insert(oi, kept);
                 if !neg {
-                    let kept: Vec<usize> = others
-                        .into_iter()
-                        .filter(|&j| hit_b.contains(&self.instances[j].id))
-                        .collect();
+                    let kept: Vec<usize> = others.iter().zip(&hit_o).filter(|(_, &h)| h).map(|(&j, _)| j).collect();
                     sel.insert(other, kept);
                 }
                 r
@@ -1686,3 +1783,10 @@ mod tests {
         assert!(!s.contains(21.0, 1.0));
     }
 }
+
+/// REKINDLE_TRACE=<event number>, read once (environment lookups are slow on Windows).
+fn trace_event() -> Option<usize> {
+    static T: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *T.get_or_init(|| std::env::var("REKINDLE_TRACE").ok().and_then(|v| v.parse().ok()))
+}
+

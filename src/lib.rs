@@ -3,6 +3,7 @@
 
 /// Sound decoding (format-independent PCM / WAV conversion).
 pub mod audio;
+pub mod fxhash;
 /// Format parser. Has no rendering dependencies.
 pub mod ctf_loader;
 /// The game library / launcher shown when no game is given.

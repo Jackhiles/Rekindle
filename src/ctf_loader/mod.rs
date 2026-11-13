@@ -20,7 +20,6 @@ pub mod sounds;
 use anyhow::{bail, Context, Result};
 use chunk::{id, read_chunk_list, ChunkDecoder, RawChunk};
 use reader::{decode_cstr, Blob, ByteReader};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub use exe::{ContainerKind, PackFile};
@@ -67,7 +66,7 @@ pub struct GameData {
 
     pub extensions: Vec<ExtensionInfo>,
     pub objects: Vec<ObjectInfo>,
-    object_index: HashMap<u16, usize>,
+    object_index: crate::fxhash::HandleIndex,
     pub frames: Vec<Frame>,
     /// Frame handle -> frame index table used by "jump to frame" actions.
     pub frame_handles: Vec<u16>,
@@ -109,7 +108,7 @@ impl GameData {
     }
 
     pub fn object(&self, handle: u16) -> Option<&ObjectInfo> {
-        self.object_index.get(&handle).map(|&i| &self.objects[i])
+        self.object_index.get(handle as u32).map(|i| &self.objects[i])
     }
 
     pub fn from_bytes(bytes: Vec<u8>, path: PathBuf) -> Result<Self> {
@@ -222,7 +221,7 @@ impl GameData {
         let object_index = objects
             .iter()
             .enumerate()
-            .map(|(i, o)| (o.handle, i))
+            .map(|(i, o)| (o.handle as u32, i))
             .collect();
 
         let mut frames = Vec::new();

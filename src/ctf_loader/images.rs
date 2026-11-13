@@ -6,7 +6,6 @@
 use super::chunk::{inflate, inflate_prefix, lz4_block};
 use super::reader::{Blob, ByteReader};
 use anyhow::{bail, Context, Result};
-use std::collections::HashMap;
 
 const IMAGE_HEADER_SIZE: usize = 32;
 
@@ -55,7 +54,7 @@ pub struct RgbaImage {
 #[derive(Debug, Default)]
 pub struct ImageBank {
     pub images: Vec<ImageEntry>,
-    by_handle: HashMap<u32, usize>,
+    by_handle: crate::fxhash::HandleIndex,
 }
 
 impl ImageBank {
@@ -239,7 +238,7 @@ impl ImageBank {
     }
 
     pub fn get(&self, handle: u32) -> Option<&ImageEntry> {
-        self.by_handle.get(&handle).map(|&i| &self.images[i])
+        self.by_handle.get(handle).map(|i| &self.images[i])
     }
 
     pub fn len(&self) -> usize {

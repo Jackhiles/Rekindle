@@ -355,6 +355,8 @@ fn run_headless(
         let p = p.borrow();
         let mut v: Vec<_> = p.iter().collect();
         v.sort_by_key(|e| std::cmp::Reverse(e.1 .0));
+        let total: std::time::Duration = p.values().map(|e| e.0).sum();
+        println!("all events: {total:.2?} over {} groups", p.len());
         println!("slowest events (frame, event): total time / runs");
         for ((f, g), (d, n)) in v.iter().take(12) {
             println!("  frame {f} event #{g}: {d:.2?} / {n}");

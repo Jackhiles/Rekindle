@@ -433,13 +433,74 @@ impl InkMaterials {
 /// the least recently drawn ones are dropped first (never those of the current frame).
 #[derive(Default)]
 struct Textures {
-    /// handle -> (texture, bytes, draw frame it was last used in)
-    map: HashMap<u32, (Option<Texture2D>, usize, u64)>,
+    /// handle -> (sprite, bytes of its own texture (0 for atlas sprites), draw frame it was
+    /// last used in, atlas page if packed)
+    map: HashMap<u32, (Option<Sprite>, usize, u64, Option<usize>)>,
+    /// Atlas pages that small images are packed into, so consecutive draws share a texture
+    /// and the GPU batches them (hundreds of separate textures mean hundreds of draw calls).
+    pages: Vec<Option<AtlasPage>>,
     bytes: usize,
     /// Counts rendered frames (for least-recently-used eviction).
     clock: u64,
     /// Replacement images from mods.
     mods: std::sync::Arc<crate::mods::Mods>,
+}
+
+/// A drawable image: a texture and the part of it holding the image.
+#[derive(Clone)]
+struct Sprite {
+    tex: Texture2D,
+    src: Rect,
+}
+
+impl Sprite {
+    fn size(&self) -> Vec2 {
+        vec2(self.src.w, self.src.h)
+    }
+
+    /// Source rectangle for a sub-area of the image.
+    fn sub(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect::new(self.src.x + x, self.src.y + y, w, h)
+    }
+}
+
+const ATLAS_SIZE: u32 = 2048;
+/// Images up to this size (each side) are packed into atlas pages.
+const ATLAS_MAX: u32 = 256;
+const PAGE_BYTES: usize = (ATLAS_SIZE * ATLAS_SIZE * 4) as usize;
+
+struct AtlasPage {
+    tex: Texture2D,
+    /// Shelf packing: current shelf's top, its height, and the next free x on it.
+    shelf_y: u32,
+    shelf_h: u32,
+    x: u32,
+    last_used: u64,
+}
+
+impl AtlasPage {
+    fn new() -> Self {
+        let tex = Texture2D::from_rgba8(ATLAS_SIZE as u16, ATLAS_SIZE as u16, &vec![0u8; PAGE_BYTES]);
+        tex.set_filter(FilterMode::Nearest);
+        Self { tex, shelf_y: 0, shelf_h: 0, x: 0, last_used: 0 }
+    }
+
+    /// Room for w x h, plus a 1-pixel transparent border so neighbours never bleed in.
+    fn place(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        let (pw, ph) = (w + 2, h + 2);
+        if self.x + pw > ATLAS_SIZE {
+            self.shelf_y += self.shelf_h;
+            self.shelf_h = 0;
+            self.x = 0;
+        }
+        if self.shelf_y + ph > ATLAS_SIZE {
+            return None;
+        }
+        let at = (self.x + 1, self.shelf_y + 1);
+        self.x += pw;
+        self.shelf_h = self.shelf_h.max(ph);
+        Some(at)
+    }
 }
 
 /// Textures kept on the GPU at most (roughly; `REKINDLE_TEXTURE_MB` overrides it).
@@ -449,10 +510,13 @@ fn texture_budget() -> usize {
 }
 
 impl Textures {
-    fn get(&mut self, g: &GameData, handle: u32) -> Option<Texture2D> {
+    fn get(&mut self, g: &GameData, handle: u32) -> Option<Sprite> {
         let clock = self.clock;
         if let Some(e) = self.map.get_mut(&handle) {
             e.2 = clock;
+            if let Some(Some(p)) = e.3.and_then(|k| self.pages.get_mut(k)) {
+                p.last_used = clock;
+            }
             return e.0.clone();
         }
         let original = g.images.get(handle);
@@ -462,38 +526,94 @@ impl Textures {
             _ => false,
         };
         let img = replaced.or_else(|| original.and_then(|e| e.decode_rgba().ok()));
-        let mut size = 0;
-        let tex = img.and_then(|img| {
-            if img.width == 0 || img.height == 0 {
-                return None;
+        let Some(img) = img.filter(|i| i.width > 0 && i.height > 0) else {
+            self.map.insert(handle, (None, 0, clock, None));
+            return None;
+        };
+        // Small images go into an atlas page (not resized replacements: those need smooth
+        // filtering, which atlas pages don't use).
+        if !resized && img.width <= ATLAS_MAX && img.height <= ATLAS_MAX {
+            if let Some(sprite) = self.pack(handle, &img) {
+                return Some(sprite);
             }
-            size = img.pixels.len();
-            let t = Texture2D::from_rgba8(img.width as u16, img.height as u16, &img.pixels);
-            // A replacement at another resolution is scaled to the original's size.
-            t.set_filter(if resized { FilterMode::Linear } else { FilterMode::Nearest });
-            Some(t)
-        });
-        self.bytes += size;
-        self.map.insert(handle, (tex.clone(), size, clock));
-        tex
+        }
+        let t = Texture2D::from_rgba8(img.width as u16, img.height as u16, &img.pixels);
+        // A replacement at another resolution is scaled to the original's size.
+        t.set_filter(if resized { FilterMode::Linear } else { FilterMode::Nearest });
+        let sprite = Sprite { src: Rect::new(0.0, 0.0, img.width as f32, img.height as f32), tex: t };
+        self.bytes += img.pixels.len();
+        self.map.insert(handle, (Some(sprite.clone()), img.pixels.len(), clock, None));
+        Some(sprite)
     }
 
-    /// Call once per rendered frame: advance the clock and release old textures if the
-    /// cache is over budget.
+    fn pack(&mut self, handle: u32, img: &crate::ctf_loader::RgbaImage) -> Option<Sprite> {
+        let (w, h) = (img.width, img.height);
+        // The most recent pages first (older ones are usually full).
+        let mut found = None;
+        for (k, page) in self.pages.iter_mut().enumerate().rev() {
+            if let Some(p) = page {
+                if let Some(at) = p.place(w, h) {
+                    found = Some((k, at));
+                    break;
+                }
+            }
+        }
+        let (k, (x, y)) = match found {
+            Some(f) => f,
+            None => {
+                let mut page = AtlasPage::new();
+                let at = page.place(w, h)?;
+                self.bytes += PAGE_BYTES;
+                let k = match self.pages.iter().position(|p| p.is_none()) {
+                    Some(free) => {
+                        self.pages[free] = Some(page);
+                        free
+                    }
+                    None => {
+                        self.pages.push(Some(page));
+                        self.pages.len() - 1
+                    }
+                };
+                (k, at)
+            }
+        };
+        let page = self.pages[k].as_mut()?;
+        page.last_used = self.clock;
+        let image = Image { bytes: img.pixels.clone(), width: w as u16, height: h as u16 };
+        page.tex.update_part(&image, x as i32, y as i32, w as i32, h as i32);
+        let sprite = Sprite { tex: page.tex.clone(), src: Rect::new(x as f32, y as f32, w as f32, h as f32) };
+        self.map.insert(handle, (Some(sprite.clone()), 0, self.clock, Some(k)));
+        Some(sprite)
+    }
+
+    /// Call once per rendered frame: advance the clock and release old textures (or whole
+    /// atlas pages) if the cache is over budget.
     fn end_frame(&mut self) {
         if self.bytes > texture_budget() {
-            let mut old: Vec<(u64, u32, usize)> = self
+            // (last used, own texture handle or atlas page, bytes)
+            let mut old: Vec<(u64, Result<u32, usize>, usize)> = self
                 .map
                 .iter()
-                .filter(|(_, e)| e.2 < self.clock)
-                .map(|(h, e)| (e.2, *h, e.1))
+                .filter(|(_, e)| e.2 < self.clock && e.3.is_none() && e.1 > 0)
+                .map(|(h, e)| (e.2, Ok(*h), e.1))
                 .collect();
-            old.sort_unstable();
-            for (_, h, size) in old {
+            old.extend(self.pages.iter().enumerate().filter_map(|(k, p)| {
+                p.as_ref().filter(|p| p.last_used < self.clock).map(|p| (p.last_used, Err(k), PAGE_BYTES))
+            }));
+            old.sort_unstable_by_key(|e| e.0);
+            for (_, what, size) in old {
                 if self.bytes <= texture_budget() * 3 / 4 {
                     break;
                 }
-                self.map.remove(&h);
+                match what {
+                    Ok(h) => {
+                        self.map.remove(&h);
+                    }
+                    Err(k) => {
+                        self.pages[k] = None;
+                        self.map.retain(|_, e| e.3 != Some(k));
+                    }
+                }
                 self.bytes -= size;
             }
         }
@@ -994,14 +1114,15 @@ impl Viewer {
         // Custom mouse pointer (Cursor extension).
         if self.running {
             if let Some(h) = self.rt.cursor_image() {
-                if let (Some(tex), Some(e)) = (self.textures.get(&self.rt.game, h), self.rt.game.images.get(h)) {
+                if let (Some(sp), Some(e)) = (self.textures.get(&self.rt.game, h), self.rt.game.images.get(h)) {
                     let m = Vec2::from(mouse_position());
                     let hot = vec2(e.hotspot.0 as f32, e.hotspot.1 as f32) * scale;
                     let params = DrawTextureParams {
                         dest_size: Some(vec2(e.width as f32, e.height as f32) * scale),
+                        source: Some(sp.src),
                         ..Default::default()
                     };
-                    draw_texture_ex(&tex, m.x - hot.x, m.y - hot.y, WHITE, params);
+                    draw_texture_ex(&sp.tex, m.x - hot.x, m.y - hot.y, WHITE, params);
                 }
             }
         }
@@ -1061,14 +1182,16 @@ impl Viewer {
         if !visible_world.overlaps(&b) {
             return;
         }
+        DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let p = xf.pt(b.x, b.y);
         let size = vec2(b.w, b.h) * xf.scale;
         match &item.visual {
             Visual::Image { handle } => {
-                if let Some(tex) = self.textures.get(&self.rt.game, *handle) {
+                if let Some(sp) = self.textures.get(&self.rt.game, *handle) {
                     let (sx, sy) = item.scale;
                     let params = DrawTextureParams {
                         dest_size: Some(size),
+                        source: Some(sp.src),
                         flip_x: sx < 0.0,
                         flip_y: sy < 0.0,
                         rotation: -item.angle.to_radians(),
@@ -1079,7 +1202,7 @@ impl Viewer {
                     if let Some(m) = material {
                         gl_use_material(m);
                     }
-                    draw_texture_ex(&tex, p.x, p.y, rgba(item.tint), params);
+                    draw_texture_ex(&sp.tex, p.x, p.y, rgba(item.tint), params);
                     if material.is_some() {
                         gl_use_default_material();
                     }
@@ -1175,7 +1298,7 @@ impl Viewer {
                 let mut right = p.x + size.x;
                 let bottom = p.y + size.y;
                 for h in handles.iter().rev() {
-                    let Some(tex) = self.textures.get(&self.rt.game, *h) else {
+                    let Some(sp) = self.textures.get(&self.rt.game, *h) else {
                         continue;
                     };
                     let s = self
@@ -1183,18 +1306,20 @@ impl Viewer {
                         .game
                         .images
                         .get(*h)
-                        .map_or(tex.size(), |e| vec2(e.width as f32, e.height as f32))
+                        .map_or(sp.size(), |e| vec2(e.width as f32, e.height as f32))
                         * xf.scale;
                     right -= s.x;
                     let params = DrawTextureParams {
                         dest_size: Some(s),
+                        source: Some(sp.src),
                         ..Default::default()
                     };
-                    draw_texture_ex(&tex, right, bottom - s.y, rgba(item.tint), params);
+                    draw_texture_ex(&sp.tex, right, bottom - s.y, rgba(item.tint), params);
                 }
             }
             Visual::Effect { params, .. } => {
-                if std::env::var_os("REKINDLE_NO_EFFECTS").is_some() {
+                static NO_EFFECTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                if *NO_EFFECTS.get_or_init(|| std::env::var_os("REKINDLE_NO_EFFECTS").is_some()) {
                     return;
                 }
                 let Some(off) = &self.offscreen else { return };
@@ -1242,7 +1367,7 @@ impl Viewer {
     }
 
     fn draw_tiled(&mut self, handle: u32, p: Vec2, size: Vec2, scale: f32, tint: Color) {
-        let Some(tex) = self.textures.get(&self.rt.game, handle) else {
+        let Some(sp) = self.textures.get(&self.rt.game, handle) else {
             return;
         };
         // Game-pixel size of the tile (a replacement image may have more pixels).
@@ -1251,8 +1376,8 @@ impl Viewer {
             .game
             .images
             .get(handle)
-            .map_or(tex.size(), |e| vec2(e.width as f32, e.height as f32));
-        let k = tex.size() / orig.max(Vec2::ONE);
+            .map_or(sp.size(), |e| vec2(e.width as f32, e.height as f32));
+        let k = sp.size() / orig.max(Vec2::ONE);
         let tile = orig * scale;
         if tile.x < 0.5 || tile.y < 0.5 {
             return;
@@ -1263,13 +1388,13 @@ impl Viewer {
             let mut x = 0.0;
             while x < size.x {
                 let tw = tile.x.min(size.x - x);
-                let src = Rect::new(0.0, 0.0, tw / scale * k.x, th / scale * k.y);
+                let src = sp.sub(0.0, 0.0, tw / scale * k.x, th / scale * k.y);
                 let params = DrawTextureParams {
                     dest_size: Some(vec2(tw, th)),
                     source: Some(src),
                     ..Default::default()
                 };
-                draw_texture_ex(&tex, p.x + x, p.y + y, tint, params);
+                draw_texture_ex(&sp.tex, p.x + x, p.y + y, tint, params);
                 x += tile.x;
             }
             y += tile.y;
@@ -1423,6 +1548,43 @@ pub fn claim_single_instance(game_path: &std::path::Path) -> bool {
     }
 }
 
+/// Items drawn (after culling), for REKINDLE_PROFILE.
+static DRAWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Per-part frame timing for REKINDLE_PROFILE.
+#[derive(Default)]
+struct FrameProfile {
+    sum: [std::time::Duration; 4],
+    frames: u32,
+    since: Option<std::time::Instant>,
+}
+
+impl FrameProfile {
+    /// Returns true when it printed a report.
+    fn add(&mut self, parts: [std::time::Duration; 4]) -> bool {
+        let since = *self.since.get_or_insert_with(std::time::Instant::now);
+        for (s, p) in self.sum.iter_mut().zip(parts) {
+            *s += p;
+        }
+        self.frames += 1;
+        if since.elapsed().as_secs_f32() >= 3.0 {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / self.frames as f64;
+            eprintln!(
+                "profile: {:.0} fps, {} items drawn | logic {:.2} ms, audio {:.2} ms, draw {:.2} ms, present {:.2} ms",
+                self.frames as f32 / since.elapsed().as_secs_f32(),
+                DRAWN.swap(0, std::sync::atomic::Ordering::Relaxed) / self.frames.max(1) as usize,
+                ms(self.sum[0]),
+                ms(self.sum[1]),
+                ms(self.sum[2]),
+                ms(self.sum[3])
+            );
+            *self = Self { since: Some(std::time::Instant::now()), ..Default::default() };
+            return true;
+        }
+        false
+    }
+}
+
 pub async fn run(game: GameData, opts: ViewerOptions) {
     if game.frames.is_empty() {
         eprintln!("game has no frames to display");
@@ -1544,6 +1706,8 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
     let walk = std::env::var("REKINDLE_WALK_FRAMES").ok().and_then(|v| v.parse::<f64>().ok());
     let mut walk_next = get_time();
     let mut walk_frame = 0usize;
+    // REKINDLE_PROFILE: average time per frame in each part of the loop, every few seconds.
+    let mut frame_profile = std::env::var_os("REKINDLE_PROFILE").map(|_| FrameProfile::default());
     loop {
         if let Some(ms) = walk {
             if get_time() >= walk_next {
@@ -1564,13 +1728,30 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         if v.rt.finished && v.running {
             break;
         }
+        let t0 = std::time::Instant::now();
         v.handle_debug_keys();
         v.gather_input();
         v.advance();
+        let t1 = std::time::Instant::now();
         v.audio.process(&mut v.rt).await;
         show_mouse((v.rt.cursor_visible && v.rt.cursor_object.is_none()) || !v.running);
+        let t2 = std::time::Instant::now();
         v.draw();
+        let t3 = std::time::Instant::now();
         next_frame().await;
+        if let Some(p) = &mut frame_profile {
+            if p.add([t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]) {
+                if let Some(ev) = &v.rt.profile {
+                    let mut ev = ev.borrow_mut();
+                    let mut top: Vec<_> = ev.iter().map(|(k, d)| (*k, *d)).collect();
+                    top.sort_by_key(|e| std::cmp::Reverse(e.1 .0));
+                    for ((f, g), (d, n)) in top.into_iter().take(5) {
+                        eprintln!("  frame {f} event #{g}: {d:.2?} / {n} runs");
+                    }
+                    ev.clear();
+                }
+            }
+        }
     }
     let secs = clock.elapsed().as_secs();
     let path = opts.game_path.clone().unwrap_or_else(|| v.rt.game.path.clone());

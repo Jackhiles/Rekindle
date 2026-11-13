@@ -7,7 +7,6 @@
 use super::chunk::{inflate, inflate_prefix};
 use super::reader::{decode_cstr, Blob, ByteReader};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 
 /// Flag value marking an uncompressed entry.
 const FLAGS_UNCOMPRESSED: u32 = 33;
@@ -81,7 +80,7 @@ impl SoundEntry {
 #[derive(Debug, Default)]
 pub struct SoundBank {
     pub sounds: Vec<SoundEntry>,
-    by_handle: HashMap<u32, usize>,
+    by_handle: crate::fxhash::HandleIndex,
 }
 
 impl SoundBank {
@@ -196,7 +195,7 @@ impl SoundBank {
     }
 
     pub fn get(&self, handle: u32) -> Option<&SoundEntry> {
-        self.by_handle.get(&handle).map(|&i| &self.sounds[i])
+        self.by_handle.get(handle).map(|i| &self.sounds[i])
     }
 
     pub fn len(&self) -> usize {

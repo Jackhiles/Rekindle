@@ -24,7 +24,8 @@ pub use input::Input;
 
 use instance::{dir_to_angle, Instance, SPEED_TO_PIXELS};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::fxhash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use value::Value;
 
@@ -112,6 +113,36 @@ impl Mask {
             height: h,
             bits,
         }
+    }
+
+    /// `n` (1..=64) bits starting at bit `start` of the mask, lowest bit first.
+    #[inline]
+    fn bits_at(&self, start: usize, n: usize) -> u64 {
+        let (w, off) = (start / 64, start % 64);
+        let mut v = self.bits.get(w).copied().unwrap_or(0) >> off;
+        if off > 0 {
+            v |= self.bits.get(w + 1).copied().unwrap_or(0) << (64 - off);
+        }
+        if n < 64 {
+            v &= (1u64 << n) - 1;
+        }
+        v
+    }
+
+    /// Solid pixels of row `y` in columns `x0..x1` (both inside the mask), 64 at a time:
+    /// calls `f(chunk_start, bits)` until it returns true.
+    #[inline]
+    pub(crate) fn row_chunks(&self, y: usize, x0: usize, x1: usize, mut f: impl FnMut(usize, u64) -> bool) -> bool {
+        let base = y * self.width;
+        let mut x = x0;
+        while x < x1 {
+            let n = (x1 - x).min(64);
+            if f(x - x0, self.bits_at(base + x, n)) {
+                return true;
+            }
+            x += n;
+        }
+        false
     }
 
     #[inline]
@@ -226,7 +257,7 @@ impl Runtime {
             &game.path,
             save_root.unwrap_or_else(|| files::default_save_root(&title)),
         );
-        let mut qualifiers: HashMap<u16, Vec<u16>> = HashMap::new();
+        let mut qualifiers: HashMap<u16, Vec<u16>> = HashMap::default();
         for o in &game.objects {
             if let ObjectProperties::Common(c) = &o.props {
                 for &q in &c.qualifiers {
@@ -254,10 +285,10 @@ impl Runtime {
             timer_ms: 0.0,
             prev_timer_ms: 0.0,
             events: Rc::new(Events::default()),
-            event_state: HashMap::new(),
-            groups_disabled: HashSet::new(),
-            group_just_activated: HashSet::new(),
-            loops: HashMap::new(),
+            event_state: HashMap::default(),
+            groups_disabled: HashSet::default(),
+            group_just_activated: HashSet::default(),
+            loops: HashMap::default(),
             pending: None,
             scroll: (0.0, 0.0),
             view_size,
@@ -268,22 +299,22 @@ impl Runtime {
             input_mouse: (0.0, 0.0),
             rng: Cell::new(0x2545_F491_4F6C_DD1D),
             qualifiers,
-            bullets: HashSet::new(),
-            platformers: HashSet::new(),
+            bullets: HashSet::default(),
+            platformers: HashSet::default(),
             unimplemented: RefCell::new(BTreeMap::new()),
             frame_log: Vec::new(),
             files,
-            exts: HashMap::new(),
+            exts: HashMap::default(),
             ext_shared: ext::Shared::default(),
-            globals: HashMap::new(),
+            globals: HashMap::default(),
             end_of_frame_pass: false,
             triggered_pass: events::Trigger::None,
             transition: None,
             cursor_object: None,
-            masks: RefCell::new(HashMap::new()),
+            masks: RefCell::new(HashMap::default()),
             oi_index: RefCell::new(None),
             obstacle_cache: RefCell::new(None),
-            profile: std::env::var_os("REKINDLE_PROFILE").map(|_| RefCell::new(HashMap::new())),
+            profile: std::env::var_os("REKINDLE_PROFILE").map(|_| RefCell::new(HashMap::default())),
         };
         rt.load_frame(start_frame);
         rt
@@ -415,7 +446,7 @@ impl Runtime {
 
     /// Keep the state of objects marked "global" for the next frame (first instance of each).
     fn remember_globals(&mut self) {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::default();
         for inst in self.instances.iter().filter(|i| !i.destroyed && !i.pasted) {
             let global = self
                 .game
@@ -816,7 +847,7 @@ impl Runtime {
     pub(crate) fn indices_of(&self, oi: u16) -> Vec<usize> {
         let mut guard = self.oi_index.borrow_mut();
         let map = guard.get_or_insert_with(|| {
-            let mut m: HashMap<u16, Vec<usize>> = HashMap::new();
+            let mut m: HashMap<u16, Vec<usize>> = HashMap::default();
             for (k, i) in self.instances.iter().enumerate() {
                 m.entry(i.oi).or_default().push(k);
             }
