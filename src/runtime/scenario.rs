@@ -12,6 +12,7 @@
 //! run 900                    # advance to tick 900
 //! dump door                  # debug: log objects whose name contains "door"
 //! expect_frame prologue      # current frame, by name or index
+//! expect "door" value 0 = 1  # an object's state: counter | value N | x | y | visible, with = != < > <= >=
 //! expect_visited title       # frame entered at some point
 //! expect_save app/save1.txt  # file written into the (temporary) save folder
 //! sweep 300                  # run every frame for 300 ticks
@@ -142,9 +143,9 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                             }
                             let (x1, y1, x2, y2) = d.rt.bounds_of(i);
                             result.log.push(format!(
-                                "tick {}: \"{}\" layer {} fixed {} at ({:.0}, {:.0}) box ({x1:.0},{y1:.0})-({x2:.0},{y2:.0}) visible {} ink {} alpha {} anim {} frame {} value0 {:?} mouse {:?} scroll {:?}",
+                                "tick {}: \"{}\" layer {} fixed {} at ({:.0}, {:.0}) box ({x1:.0},{y1:.0})-({x2:.0},{y2:.0}) visible {} ink {} alpha {} anim {} frame {} values {:?} counter {} mouse {:?} scroll {:?}",
                                 d.tick, obj.name, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
-                                inst.anim.anim, inst.anim.frame, inst.values.first(), d.last_mouse, d.rt.scroll
+                                inst.anim.anim, inst.anim.frame, inst.values.iter().take(6).map(|v| v.to_string()).collect::<Vec<_>>(), inst.counter, d.last_mouse, d.rt.scroll
                             ));
                             if let crate::ctf_loader::ObjectProperties::Common(c) = &obj.props {
                                 if let Some(m) = c.movements.first() {
@@ -173,6 +174,11 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                             result.failures.push(at(&format!("no save file {rest}")));
                         }
                     }
+                    "expect" => match check_object(&d.rt, rest) {
+                        Ok(None) => {}
+                        Ok(Some(msg)) => result.failures.push(at(&msg)),
+                        Err(e) => bail!(at(&e)),
+                    },
                     "expect_no_unimplemented" => {
                         let un = d.rt.unimplemented.borrow();
                         if !un.is_empty() {
@@ -187,6 +193,61 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
     }
     let _ = std::fs::remove_dir_all(&save_root);
     Ok(result)
+}
+
+/// `"name" field [index] op value`: true if any live instance with that exact name
+/// matches. Returns a failure message, or an error for a malformed line.
+fn check_object(rt: &Runtime, rest: &str) -> std::result::Result<Option<String>, String> {
+    let rest = rest.trim();
+    let (name, tail) = rest
+        .strip_prefix('"')
+        .and_then(|r| r.split_once('"'))
+        .ok_or("expect: object name must be in quotes")?;
+    let mut words = tail.split_whitespace();
+    let field = words.next().ok_or("expect: missing field")?;
+    let index = if field == "value" {
+        Some(words.next().and_then(|w| w.parse::<usize>().ok()).ok_or("expect: value needs an index")?)
+    } else {
+        None
+    };
+    let op = words.next().ok_or("expect: missing operator")?;
+    let want: f64 = words.next().and_then(|w| w.parse().ok()).ok_or("expect: missing number")?;
+    let cmp = |v: f64| match op {
+        "=" | "==" => (v - want).abs() < 1e-9,
+        "!=" => (v - want).abs() >= 1e-9,
+        "<" => v < want,
+        ">" => v > want,
+        "<=" => v <= want,
+        ">=" => v >= want,
+        _ => false,
+    };
+    if !matches!(op, "=" | "==" | "!=" | "<" | ">" | "<=" | ">=") {
+        return Err(format!("expect: unknown operator `{op}`"));
+    }
+    let mut seen = Vec::new();
+    for inst in rt.instances.iter().filter(|i| !i.destroyed) {
+        let Some(obj) = rt.game.object(inst.oi) else { continue };
+        if !obj.name.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        let v = match field {
+            "counter" => inst.counter.as_f64(),
+            "value" => inst.value(index.unwrap_or(0)).as_f64(),
+            "x" => inst.x,
+            "y" => inst.y,
+            "visible" => inst.visible as u8 as f64,
+            other => return Err(format!("expect: unknown field `{other}`")),
+        };
+        if cmp(v) {
+            return Ok(None);
+        }
+        seen.push(v);
+    }
+    Ok(Some(if seen.is_empty() {
+        format!("no object \"{name}\"")
+    } else {
+        format!("\"{name}\" {field} {op} {want} not met (got {seen:?})")
+    }))
 }
 
 /// All `*.scn` files in a directory, sorted.

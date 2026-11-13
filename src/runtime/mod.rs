@@ -173,6 +173,8 @@ pub struct Runtime {
     exts: HashMap<i16, Box<dyn ext::Extension>>,
     /// True while running the "end of frame" events before a frame change.
     end_of_frame_pass: bool,
+    /// Running only triggered input events ("upon pressing a key", "user clicks").
+    triggered_pass: bool,
     /// Frame fade currently playing.
     pub transition: Option<TransitionState>,
     /// Name of an object whose image replaces the mouse pointer (Cursor extension).
@@ -259,6 +261,7 @@ impl Runtime {
             files,
             exts: HashMap::new(),
             end_of_frame_pass: false,
+            triggered_pass: false,
             transition: None,
             cursor_object: None,
             masks: RefCell::new(HashMap::new()),
@@ -414,6 +417,15 @@ impl Runtime {
             inst.update_animation(obj);
         }
 
+        // Triggered input events run as the input arrives, i.e. before the main pass.
+        let any_input = !input.pressed.is_empty()
+            || input.clicked.iter().any(|&c| c)
+            || input.double_clicked.iter().any(|&c| c);
+        if any_input {
+            self.triggered_pass = true;
+            self.run_events(input, None);
+            self.triggered_pass = false;
+        }
         self.run_events(input, None);
         self.group_just_activated.clear();
 

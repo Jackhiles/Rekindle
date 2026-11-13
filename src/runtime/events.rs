@@ -365,6 +365,12 @@ impl Runtime {
             if end_of_frame != self.end_of_frame_pass {
                 continue;
             }
+            if loop_name.is_none()
+                && !self.end_of_frame_pass
+                && is_triggered_input(group) != self.triggered_pass
+            {
+                continue;
+            }
             let on_loop = group.conditions.iter().find(|c| cond_is(c, SYS, -16));
             match (loop_name, on_loop) {
                 (None, Some(_)) => continue,
@@ -1527,6 +1533,15 @@ impl Runtime {
         };
         Some((ox + dx, oy + dy, layer, dir))
     }
+}
+
+/// An event that starts with a triggered input condition ("upon pressing a key",
+/// "user clicks", "user clicks on an object"). Fusion runs these when the input
+/// arrives, before the frame's main pass through the event list.
+fn is_triggered_input(group: &EventGroup) -> bool {
+    group.conditions.first().is_some_and(|c| {
+        c.object_type == MOUSE && !c.negated() && matches!(c.num, -1 | -5 | -6 | -7 | -9)
+    })
 }
 
 #[cfg(test)]

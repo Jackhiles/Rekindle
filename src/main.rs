@@ -157,14 +157,19 @@ fn main() -> Result<()> {
 
     let opts = render::ViewerOptions {
         start_frame: cli.frame,
-        screenshot: cli.screenshot,
+        screenshot: cli.screenshot.clone(),
         fit: cli.fit,
         show_hidden: cli.show_hidden,
         hidden_layers: cli.hide_layer,
         run_events: !cli.static_view,
         screenshot_ticks: cli.ticks,
         mute: cli.mute,
-        save_dir: cli.save_dir,
+        // Screenshot / scripted runs are tests: keep them away from the player's saves.
+        save_dir: cli.save_dir.or_else(|| {
+            cli.screenshot
+                .as_ref()
+                .map(|_| std::env::temp_dir().join(format!("fusion-rt-test-{}", std::process::id())))
+        }),
         fullscreen: if cli.fullscreen {
             Some(true)
         } else if cli.windowed {
