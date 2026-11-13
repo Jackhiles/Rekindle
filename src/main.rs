@@ -44,6 +44,10 @@ struct Cli {
     #[arg(long, requires = "game")]
     add_to_steam: bool,
 
+    /// Write the library artwork Rekindle makes for GAME into DIR (a preview), then exit.
+    #[arg(long, requires = "game", hide = true)]
+    make_art: Option<PathBuf>,
+
     /// Print a summary of the parsed application, frames, objects and assets (no window).
     #[arg(long)]
     dump_info: bool,
@@ -182,6 +186,14 @@ fn main() -> Result<()> {
         macroquad::Window::from_config(rekindle::launcher::window_conf(), rekindle::launcher::run());
         return Ok(());
     };
+    if let Some(dir) = &cli.make_art {
+        let entry = rekindle::launcher::library::inspect(&game_path)
+            .ok_or_else(|| anyhow::anyhow!("{} is not a Fusion game", game_path.display()))?;
+        for p in rekindle::launcher::steam_shortcuts::preview_art(&entry.path, &entry.title, dir) {
+            println!("{}", p.display());
+        }
+        return Ok(());
+    }
     if cli.add_to_steam {
         let entry = rekindle::launcher::library::inspect(&game_path)
             .ok_or_else(|| anyhow::anyhow!("{} is not a Fusion game", game_path.display()))?;

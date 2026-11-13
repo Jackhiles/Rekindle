@@ -146,7 +146,8 @@ pub fn add_to_vdf(existing: Option<&[u8]>, s: &Shortcut) -> Result<(Vec<u8>, u32
         ("DevkitOverrideAppID".into(), Value::Int(0)),
         ("LastPlayTime".into(), Value::Int(0)),
         ("FlatpakAppID".into(), Value::Str(String::new())),
-        ("tags".into(), Value::Map(Vec::new())),
+        // Shown as a "Rekindle" collection in Steam's library.
+        ("tags".into(), Value::Map(vec![("0".into(), Value::Str("Rekindle".into()))])),
     ];
     // Same game through Rekindle already there (any name): replace it in place.
     let field = |m: &[(String, Value)], key: &str| {
@@ -293,6 +294,11 @@ pub fn install_art(config_dir: &Path, shortcut_id: u32, art: &[(&str, PathBuf)])
     n
 }
 
+/// Make the artwork Rekindle would give a game without Steam artwork, into `dir`.
+pub fn preview_art(game: &Path, title: &str, dir: &Path) -> Vec<PathBuf> {
+    load_game(game).map(|g| super::art::generate(&g, title, dir).into_iter().map(|(_, p)| p).collect()).unwrap_or_default()
+}
+
 /// Write the shortcut (Steam must not be running). Returns how many artwork files were added.
 pub fn add(s: &Shortcut, art: &[(&str, PathBuf)]) -> Result<usize, String> {
     let config = user_config_dir().ok_or("no Steam account found on this computer")?;
@@ -365,17 +371,27 @@ pub fn start_steam() {
     let _ = c.spawn();
 }
 
-/// The game's own icon as a 256 x 256 PNG for Steam (cached next to the launcher's icons).
-fn icon_for(game: &Path) -> Option<PathBuf> {
+/// Load a game for its icon / pictures (a ".dat" game's icon lives in the .exe next to it).
+fn load_game(game: &Path) -> Option<crate::ctf_loader::GameData> {
     let src = if game.extension().is_some_and(|e| e.eq_ignore_ascii_case("dat")) && game.with_extension("exe").is_file() {
         game.with_extension("exe")
     } else {
         game.to_path_buf()
     };
-    let icon = crate::ctf_loader::GameData::load(&src).ok()?.icon?;
+    crate::ctf_loader::GameData::load(&src).ok()
+}
+
+/// Where generated files for a game go: `<data dir>/steam/<id>/`.
+fn work_dir(game: &Path) -> Option<PathBuf> {
     let small = super::library::icon_path(game);
-    let out = small.with_file_name(format!("{}-256.png", small.file_stem()?.to_string_lossy()));
-    std::fs::create_dir_all(out.parent()?).ok()?;
+    Some(super::library::data_dir().join("steam").join(small.file_stem()?))
+}
+
+/// The game's own icon as a 256 x 256 PNG for Steam.
+fn icon_for(g: &crate::ctf_loader::GameData, dir: &Path) -> Option<PathBuf> {
+    let icon = g.icon.as_ref()?;
+    std::fs::create_dir_all(dir).ok()?;
+    let out = dir.join("icon.png");
     super::library::write_png(&out, 256, &icon.resized(256)).ok()?;
     Some(out)
 }
@@ -386,9 +402,22 @@ fn icon_for(game: &Path) -> Option<PathBuf> {
 pub fn add_game(game: &Path, title: &str, may_restart: bool, progress: impl Fn(&str)) -> Result<String, String> {
     let exe = super::update::program_path().map_err(|e| e.to_string())?;
     let game = std::path::absolute(game).unwrap_or_else(|_| game.to_path_buf());
-    let shortcut = Shortcut { name: title.to_string(), exe, game: game.clone(), icon: icon_for(&game) };
+    progress("Preparing artwork...");
+    let data = load_game(&game);
+    let dir = work_dir(&game);
+    let icon = data.as_ref().zip(dir.as_deref()).and_then(|(g, d)| icon_for(g, d));
+    // "(Rekindle)" tells it apart from a Steam copy of the same game.
+    let shortcut = Shortcut { name: format!("{title} (Rekindle)"), exe, game: game.clone(), icon };
     let app = steam_app_for(&game);
-    let art = app.as_deref().map(steam_art).unwrap_or_default();
+    let mut art = app.as_deref().map(steam_art).unwrap_or_default();
+    // Not a Steam game (or Steam has no pictures of it): make artwork from the game itself.
+    let generated = art.is_empty();
+    if generated {
+        if let (Some(g), Some(d)) = (&data, &dir) {
+            art = super::art::generate(g, title, d);
+        }
+    }
+    drop(data);
     let running = steam_running();
     let restart = running && may_restart && !in_gaming_mode();
     if restart {
@@ -404,9 +433,9 @@ pub fn add_game(game: &Path, title: &str, may_restart: bool, progress: impl Fn(&
         start_steam();
     }
     let n = n?;
-    let art_note = match (app.is_some(), n) {
-        (_, n) if n > 0 => " with its Steam artwork",
-        (true, _) => " (its Steam artwork isn't in Steam's cache; open its store page once to fetch it)",
+    let art_note = match (generated, n) {
+        (false, _) => " with its Steam artwork",
+        (true, n) if n > 0 => " with artwork made from the game",
         _ => "",
     };
     Ok(if running && !restart {

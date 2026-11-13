@@ -73,7 +73,17 @@ fine. (`cargo build --release` alone leaves the program in `target/release/`.)
 Run `rekindle` without a game to open the launcher. "Add game..." picks a game file and "Add folder..." finds every Fusion
 game in a folder (also from the command line: `rekindle --add FILE_OR_FOLDER`). Each game has **Play**, **Desktop
 shortcut** (a shortcut that starts the game with Rekindle, using the game's own icon; also `rekindle GAME --shortcut`)
-and **X** (removes it from the library; the files are untouched). Double-click a game to play it.
+and **X** (removes it from the library; the files are untouched). Double-click a game to play it. Only one copy
+of a game runs at a time, and while a game started from the launcher is running, the launcher ignores the controller.
+
+**Steam** (shown when Steam is installed; also `rekindle GAME --add-to-steam`) adds the game to Steam as a non-Steam
+shortcut that starts it with Rekindle, with the game's icon. If the game is or was a Steam game (installed through
+Steam, or copied out of a Steam library into a folder named after it), its store artwork (capsule, header, hero and
+logo) is copied from Steam's cache; other games get artwork made from the game itself (its most detailed
+full-screen picture with its icon and title). The shortcut is named "<title> (Rekindle)" and tagged for a "Rekindle"
+collection. Steam only reads its shortcuts when it starts and may overwrite the file while
+open, so a running Steam is closed and started again around the change (in Steam's Gaming Mode, where that isn't
+possible, the shortcut appears after the next restart). The original file is kept as `shortcuts.vdf.rekindle-backup`.
 
 **Steam games** finds Clickteam Fusion games installed through Steam (all Steam libraries; on Linux also Flatpak
 Steam) and adds them, either linked where Steam installed them or copied into a storage folder you choose (so they

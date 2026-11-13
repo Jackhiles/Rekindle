@@ -1816,6 +1816,7 @@ dependencies = [
  "cpal",
  "embed-resource",
  "flate2",
+ "fontdue",
  "gilrs",
  "macroquad",
  "memmap2",

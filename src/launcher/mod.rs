@@ -4,6 +4,7 @@
 pub mod library;
 pub mod steam;
 pub mod steam_shortcuts;
+mod art;
 pub mod update;
 
 /// File / folder pickers.
@@ -78,7 +79,7 @@ const STATUS_H: f32 = 30.0;
 /// (Inter, SIL Open Font License; see assets/fonts).
 pub const ICON_PNG: &[u8] = include_bytes!("../../assets/icon/rekindle-256.png");
 const FONT_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
-const FONT_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
+pub(crate) const FONT_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
 
 /// The icon decoded to 256 x 256 RGBA.
 pub fn icon_image() -> Option<crate::ctf_loader::icon::IconImage> {
