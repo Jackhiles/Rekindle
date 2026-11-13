@@ -63,12 +63,31 @@ pub struct Settings {
     pub window_scale: u8,
     /// Show the debug overlay (frame, tick, unsupported features) when the game starts.
     pub hud: bool,
+    /// Map a gamepad to keyboard + mouse.
+    pub pad: bool,
+    /// Left stick / D-pad press W A S D instead of the arrow keys.
+    pub pad_wasd: bool,
+    /// Right-stick cursor speed: 1 slow, 2 normal, 3 fast.
+    pub pad_speed: u8,
+    /// Button remaps, e.g. ("south", "13") or ("rt", "click"); see `render::gamepad`.
+    pub pad_map: Vec<(String, String)>,
     path: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { fullscreen: None, filter: Filter::Smooth, scaling: Scaling::Fit, window_scale: 0, hud: false, path: None }
+        Self {
+            fullscreen: None,
+            filter: Filter::Smooth,
+            scaling: Scaling::Fit,
+            window_scale: 0,
+            hud: false,
+            pad: true,
+            pad_wasd: false,
+            pad_speed: 2,
+            pad_map: Vec::new(),
+            path: None,
+        }
     }
 }
 
@@ -107,6 +126,14 @@ impl Settings {
                 "scaling" => self.scaling = Scaling::parse(&v).unwrap_or(self.scaling),
                 "window_scale" => self.window_scale = v.parse::<u8>().unwrap_or(0).min(4),
                 "hud" => self.hud = on,
+                "controller" => self.pad = on,
+                "controller_move" => self.pad_wasd = v == "wasd",
+                "controller_cursor_speed" => self.pad_speed = v.parse::<u8>().unwrap_or(2).clamp(1, 3),
+                key if key.starts_with("pad_") => {
+                    let button = key[4..].to_string();
+                    self.pad_map.retain(|(b, _)| *b != button);
+                    self.pad_map.push((button, v.clone()));
+                }
                 _ => {}
             }
         }
@@ -122,6 +149,12 @@ impl Settings {
         text += &format!("scaling={}\n", self.scaling.name());
         text += &format!("window_scale={}\n", self.window_scale);
         text += &format!("hud={}\n", self.hud as u8);
+        text += &format!("controller={}\n", self.pad as u8);
+        text += &format!("controller_move={}\n", if self.pad_wasd { "wasd" } else { "arrows" });
+        text += &format!("controller_cursor_speed={}\n", self.pad_speed);
+        for (b, v) in &self.pad_map {
+            text += &format!("pad_{b}={v}\n");
+        }
         text
     }
 

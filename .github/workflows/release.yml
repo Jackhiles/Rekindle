@@ -23,11 +23,11 @@ jobs:
             asset: rekindle-linux-x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Linux libraries (X11, OpenGL, ALSA)
+      - name: Linux libraries (X11, OpenGL, ALSA, udev for gamepads)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev libudev-dev
       - name: Test
         run: cargo test --release
       - name: Build

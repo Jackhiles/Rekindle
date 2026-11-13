@@ -67,6 +67,8 @@ const ACCENT: Color = Color::new(0.96, 0.52, 0.18, 1.0);
 const BUTTON: Color = Color::new(0.22, 0.22, 0.27, 1.0);
 
 const ROW_H: f32 = 76.0;
+/// Vertical step between rows of the settings panel.
+const ROW_STEP: f32 = 54.0;
 const HEADER_H: f32 = 72.0;
 const STATUS_H: f32 = 30.0;
 
@@ -142,6 +144,11 @@ struct Launcher {
     /// A newer release, once the background check found one.
     update: Option<update::Release>,
     updating: bool,
+    /// Gamepad navigation: selected card, and this frame's button presses.
+    pad: Option<gilrs::Gilrs>,
+    pad_held: std::collections::HashSet<gilrs::Button>,
+    selected: Option<usize>,
+    pad_back: bool,
 }
 
 impl Launcher {
@@ -169,6 +176,68 @@ impl Launcher {
             settings_panel: None,
             update: None,
             updating: false,
+            pad: gilrs::Gilrs::new().ok(),
+            pad_held: Default::default(),
+            selected: None,
+            pad_back: false,
+        }
+    }
+
+    /// Controller navigation: up / down select a game, A plays it, Y opens its settings,
+    /// B closes a panel. Returns the action for the selected game (0 play, 4 settings).
+    fn pad_nav(&mut self) -> Option<(usize, u8)> {
+        use gilrs::{Axis, Button};
+        self.pad_back = false;
+        let g = self.pad.as_mut()?;
+        while g.next_event().is_some() {}
+        let (_, p) = g.gamepads().find(|(_, p)| p.is_connected())?;
+        let ly = p.value(Axis::LeftStickY);
+        let mut now = std::collections::HashSet::new();
+        for b in [Button::DPadUp, Button::DPadDown, Button::South, Button::East, Button::North] {
+            if p.is_pressed(b) {
+                now.insert(b);
+            }
+        }
+        if ly > 0.6 {
+            now.insert(Button::DPadUp);
+        }
+        if ly < -0.6 {
+            now.insert(Button::DPadDown);
+        }
+        let pressed = |b: Button| now.contains(&b) && !self.pad_held.contains(&b);
+        let (up, down, a, b, y) = (
+            pressed(Button::DPadUp),
+            pressed(Button::DPadDown),
+            pressed(Button::South),
+            pressed(Button::East),
+            pressed(Button::North),
+        );
+        self.pad_held = now;
+        self.pad_back = b;
+        if self.entries.is_empty() || self.settings_panel.is_some() || self.show_log {
+            if b && self.show_log {
+                self.show_log = false;
+            }
+            return None;
+        }
+        let n = self.entries.len();
+        let cur = self.selected.unwrap_or(0).min(n - 1);
+        if up || down {
+            let next = if self.selected.is_none() { 0 } else if up { cur.saturating_sub(1) } else { (cur + 1).min(n - 1) };
+            self.selected = Some(next);
+            // Keep the selection on screen.
+            let y = next as f32 * ROW_H;
+            let visible = screen_height() - HEADER_H - STATUS_H;
+            if y < self.scroll {
+                self.scroll = y;
+            } else if y + ROW_H > self.scroll + visible {
+                self.scroll = y + ROW_H - visible;
+            }
+        }
+        match (self.selected, a, y) {
+            (Some(i), true, _) => Some((i.min(n - 1), 0)),
+            (Some(i), _, true) => Some((i.min(n - 1), 4)),
+            _ => None,
         }
     }
 
@@ -433,7 +502,7 @@ impl Launcher {
             self.text(msg, (sw - w) / 2.0, sh / 2.0, 18, MUTED);
         }
         let mouse = Vec2::from(mouse_position());
-        let mut action: Option<(usize, u8)> = None;
+        let mut action: Option<(usize, u8)> = self.pad_nav();
         for i in 0..self.entries.len() {
             let y = top + i as f32 * ROW_H - self.scroll;
             if y + ROW_H < top || y > bottom {
@@ -442,6 +511,9 @@ impl Launcher {
             let row = Rect::new(16.0, y + 4.0, sw - 32.0, ROW_H - 8.0);
             let hover = row.contains(mouse) && mouse.y > top && mouse.y < bottom;
             draw_rectangle(row.x, row.y, row.w, row.h, if hover { CARD_HOVER } else { CARD });
+            if self.selected == Some(i) {
+                draw_rectangle_lines(row.x, row.y, row.w, row.h, 3.0, ACCENT);
+            }
             let icon_rect = Rect::new(row.x + 12.0, row.y + (row.h - 48.0) / 2.0, 48.0, 48.0);
             let path = self.entries[i].path.clone();
             match self.icon(&path) {
@@ -556,7 +628,7 @@ impl Launcher {
         let sw = screen_width();
         let Some((i, mut s)) = self.settings_panel.clone() else { return };
         let title = self.entries.get(i).map(|e| e.title.clone()).unwrap_or_default();
-        draw_rectangle(16.0, top + 4.0, sw - 32.0, 420.0, CARD);
+        draw_rectangle(16.0, top + 4.0, sw - 32.0, screen_height() - top - STATUS_H - 8.0, CARD);
         self.text(&format!("Settings - {title}"), 36.0, top + 40.0, 24, TEXT);
         self.text("Saved right away; applied the next time the game starts. In game: F11 fullscreen, F9 filter, F10 scaling, F1 HUD.", 36.0, top + 64.0, 14, MUTED);
         let mut y = top + 80.0;
@@ -570,33 +642,48 @@ impl Launcher {
             s.fullscreen = [None, Some(true), Some(false)][k];
             changed = true;
         }
-        y += 64.0;
+        y += ROW_STEP;
         if let Some(k) = self.choice_row(y, "Window size", "Size of the window when not fullscreen", &["Auto", "1x", "2x", "3x"], s.window_scale.min(3) as usize) {
             s.window_scale = k as u8;
             changed = true;
         }
-        y += 64.0;
+        y += ROW_STEP;
         let sc = Scaling::ALL.iter().position(|v| *v == s.scaling).unwrap_or(0);
         if let Some(k) = self.choice_row(y, "Scaling", "Fit keeps the shape; Integer keeps pixels crisp", &["Fit", "Integer", "Stretch"], sc) {
             s.scaling = Scaling::ALL[k];
             changed = true;
         }
-        y += 64.0;
+        y += ROW_STEP;
         let fi = Filter::ALL.iter().position(|v| *v == s.filter).unwrap_or(1);
         if let Some(k) = self.choice_row(y, "Upscaling", "How the picture is enlarged: Enhanced is sharpest", &["Sharp pixels", "Smooth", "Enhanced"], fi) {
             s.filter = Filter::ALL[k];
             changed = true;
         }
-        y += 64.0;
+        y += ROW_STEP;
         if let Some(k) = self.choice_row(y, "Debug HUD", "Frame / tick overlay at start (F1 toggles)", &["Off", "On"], s.hud as usize) {
             s.hud = k == 1;
+            changed = true;
+        }
+        y += ROW_STEP;
+        if let Some(k) = self.choice_row(y, "Controller", "Play with a gamepad (mapped to keys + mouse)", &["Off", "On"], s.pad as usize) {
+            s.pad = k == 1;
+            changed = true;
+        }
+        y += ROW_STEP;
+        if let Some(k) = self.choice_row(y, "Stick moves with", "Which keys the left stick / D-pad press", &["Arrow keys", "W A S D"], s.pad_wasd as usize) {
+            s.pad_wasd = k == 1;
+            changed = true;
+        }
+        y += ROW_STEP;
+        if let Some(k) = self.choice_row(y, "Cursor speed", "Right stick mouse cursor (RT / RB click)", &["Slow", "Normal", "Fast"], (s.pad_speed.clamp(1, 3) - 1) as usize) {
+            s.pad_speed = k as u8 + 1;
             changed = true;
         }
         if changed {
             s.save();
         }
         let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
-        let close = self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape);
+        let close = self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape) || self.pad_back;
         self.settings_panel = if close { None } else { Some((i, s)) };
     }
 

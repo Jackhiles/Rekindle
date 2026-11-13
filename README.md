@@ -91,6 +91,23 @@ run it; on the Deck, do that in desktop mode and add it to Steam as a non-Steam 
 Input's keyboard-and-mouse templates map the Deck's controls for the games. Add games with "Add folder..." (uses the
 desktop's own picker, kdialog or zenity) or `rekindle-linux-x86_64 --add ~/Games`.
 
+### Controllers
+Games that only support keyboard and mouse can be played with a gamepad (Xbox / PlayStation controllers, Steam Deck).
+On by default; per game in the launcher's **Settings** (on/off, left stick as arrow keys or W A S D, cursor speed).
+
+| Control | Becomes |
+|---|---|
+| Left stick / D-pad | arrow keys (or W A S D) |
+| Right stick | an on-screen mouse cursor (moving the real mouse takes over again) |
+| RB / RT, LB / LT | left click, right click |
+| A / Start, B, X, Y | Enter, Space, Ctrl, Shift |
+| Back / Select | Escape |
+
+Remap buttons in the game's settings file (`%APPDATA%\Rekindle\settings\<game>.ini`) with lines like `pad_south=32`
+(button: `south east west north start select lb rb lt rt l3 r3 up down left right`; value: a Windows key code,
+`click`, `rclick` or `none`). The launcher itself works with a controller too: up / down to pick a game, A to play,
+Y for its settings, B to close a panel.
+
 ### Mods (replacement packs)
 Images and sounds can be replaced without touching the game. Each game has a mods folder,
 `%APPDATA%\Rekindle\mods\<game file name>\` (the launcher's **Mods** button creates and opens it, with a how-to):

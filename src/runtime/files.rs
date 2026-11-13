@@ -178,8 +178,14 @@ mod tests {
 
     #[test]
     fn app_relative_paths_map_into_the_sandbox() {
-        let fs = SaveFs::new(Path::new("C:\\Games\\X\\game.exe"), PathBuf::from("S"));
-        let p = fs.sandboxed("C:\\Games\\X\\save1.txt");
+        // An absolute game path on this platform; games then build their paths from it.
+        let (exe, save) = if cfg!(windows) {
+            ("C:\\Games\\X\\game.exe", "C:\\Games\\X\\save1.txt")
+        } else {
+            ("/games/x/game.exe", "/games/x/save1.txt")
+        };
+        let fs = SaveFs::new(Path::new(exe), PathBuf::from("S"));
+        let p = fs.sandboxed(save);
         assert_eq!(p, PathBuf::from("S").join("app").join("save1.txt"));
         assert_eq!(
             fs.sandboxed("saves/a.ini"),

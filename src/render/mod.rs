@@ -3,6 +3,7 @@
 
 pub mod audio_out;
 pub mod scene;
+pub mod gamepad;
 pub mod settings;
 pub mod text;
 
@@ -512,6 +513,8 @@ struct Viewer {
     notice: Option<(String, f64)>,
     /// Consecutive ticks that failed; the game pauses if this keeps growing.
     failed_ticks: u32,
+    /// Controller mapped to keyboard + mouse.
+    pad: gamepad::Gamepad,
 }
 
 /// Consecutive failing ticks before the game is paused.
@@ -647,6 +650,10 @@ impl Viewer {
         let m = (Vec2::from(mouse_position()) - origin) / (size / self.view_size()) + self.current_scroll();
         self.input.mouse = (m.x as f64, m.y as f64);
         self.input.wheel += mouse_wheel().1;
+        let (origin, size) = self.present();
+        let view = self.view_size();
+        let scroll = self.current_scroll();
+        self.pad.apply(&mut self.input, view, |p| (p - origin) / (size / view), scroll);
     }
 
     /// Debug keys. Function keys and Ctrl combinations are reserved for the viewer;
@@ -975,6 +982,10 @@ impl Viewer {
             let w = measure_text(msg, None, 20, 1.0).width;
             draw_rectangle(8.0, screen_height() - 36.0, w + 16.0, 28.0, Color::new(0.5, 0.0, 0.0, 0.85));
             draw_text(msg, 16.0, screen_height() - 16.0, 20.0, WHITE);
+        }
+        if let Some(c) = self.pad.cursor {
+            let (o, size) = self.present();
+            self.pad.draw_cursor(o + c * (size / self.view_size()));
         }
         if self.hud {
             self.draw_hud();
@@ -1386,6 +1397,7 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         logged_unimplemented: 0,
         notice: None,
         failed_ticks: 0,
+        pad: gamepad::Gamepad::new(&opts.settings),
     };
     // Replacement packs for this game.
     let mods = std::sync::Arc::new(crate::mods::Mods::load(opts.game_path.as_deref().unwrap_or(&v.rt.game.path)));
