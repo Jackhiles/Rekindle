@@ -35,7 +35,31 @@ jobs:
       - name: Name the file for the updater
         shell: bash
         run: cp "${{ matrix.built }}" "${{ matrix.asset }}"
+      - name: AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp target/release/rekindle AppDir/usr/bin/rekindle
+          ln -s usr/bin/rekindle AppDir/AppRun
+          target/release/rekindle --write-icon AppDir/rekindle.png
+          cat > AppDir/rekindle.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Rekindle
+          Comment=Runtime and launcher for Clickteam Fusion games
+          Exec=rekindle %f
+          Icon=rekindle
+          Categories=Game;
+          Terminal=false
+          EOF
+          sed -i 's/^ *//' AppDir/rekindle.desktop
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool AppDir Rekindle-x86_64.AppImage
       - uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset }}
+          files: |
+            ${{ matrix.asset }}
+            Rekindle-x86_64.AppImage
+          fail_on_unmatched_files: false
           generate_release_notes: true

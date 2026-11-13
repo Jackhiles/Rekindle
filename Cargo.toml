@@ -1,6 +1,6 @@
 [package]
 name = "rekindle"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Clean-room, open-source runtime for Clickteam Fusion 2.5 game data (bring your own game files)"
 license = "MIT OR Apache-2.0"

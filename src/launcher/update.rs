@@ -22,6 +22,19 @@ pub struct Release {
     pub notes: String,
 }
 
+/// The file to launch, link to or replace: the AppImage itself when running from one
+/// (the program then runs from a temporary mount), otherwise this executable.
+pub fn program_path() -> std::io::Result<PathBuf> {
+    match std::env::var_os("APPIMAGE") {
+        Some(p) if cfg!(target_os = "linux") && !p.is_empty() => Ok(PathBuf::from(p)),
+        _ => std::env::current_exe(),
+    }
+}
+
+fn is_appimage() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some_and(|p| !p.is_empty())
+}
+
 pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -31,7 +44,7 @@ pub fn asset_name() -> Option<&'static str> {
     if cfg!(all(windows, target_arch = "x86_64")) {
         Some("rekindle-windows-x86_64.exe")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("rekindle-linux-x86_64")
+        Some(if is_appimage() { "Rekindle-x86_64.AppImage" } else { "rekindle-linux-x86_64" })
     } else {
         None
     }
@@ -39,7 +52,7 @@ pub fn asset_name() -> Option<&'static str> {
 
 /// A developer build (run from Cargo's `target` folder) is never replaced.
 pub fn is_dev_build() -> bool {
-    std::env::current_exe()
+    program_path()
         .map(|p| p.components().any(|c| c.as_os_str().eq_ignore_ascii_case("target")))
         .unwrap_or(true)
 }
@@ -96,14 +109,14 @@ fn old_copy(exe: &Path) -> PathBuf {
 
 /// Delete the copy left behind by the last update.
 pub fn cleanup() {
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = program_path() {
         let _ = std::fs::remove_file(old_copy(&exe));
     }
 }
 
 /// Download and swap in the new executable. Returns its path (start it to finish updating).
 pub fn install(r: &Release) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = program_path().map_err(|e| e.to_string())?;
     let tmp = exe.with_extension("download");
     let tmp_s = tmp.to_string_lossy().into_owned();
     curl(&["-o", &tmp_s, &r.url])?;

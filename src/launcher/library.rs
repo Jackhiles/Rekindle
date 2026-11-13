@@ -84,7 +84,7 @@ pub fn inspect(path: &Path) -> Option<Entry> {
     Some(Entry { path: path.to_path_buf(), title })
 }
 
-fn write_png(path: &Path, size: u32, rgba: &[u8]) -> std::io::Result<()> {
+pub fn write_png(path: &Path, size: u32, rgba: &[u8]) -> std::io::Result<()> {
     let file = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut enc = png::Encoder::new(file, size, size);
     enc.set_color(png::ColorType::Rgba);
@@ -121,7 +121,7 @@ pub fn find_games(dir: &Path) -> Vec<PathBuf> {
 
 /// Create a desktop shortcut that starts `game` with Rekindle, using the game's own icon.
 pub fn create_shortcut(game: &Path, title: &str) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = super::update::program_path().map_err(|e| e.to_string())?;
     let game = std::path::absolute(game).unwrap_or_else(|_| game.to_path_buf());
     let safe: String = title.chars().map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c }).collect();
     // A ".dat" game's icon lives in the .exe next to it.

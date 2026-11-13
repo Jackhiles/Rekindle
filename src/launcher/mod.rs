@@ -400,7 +400,7 @@ impl Launcher {
             self.say(format!("Can't find {} any more.", e.path.display()));
             return;
         }
-        match std::env::current_exe().and_then(|exe| {
+        match update::program_path().and_then(|exe| {
             std::process::Command::new(exe)
                 .arg(&e.path)
                 .current_dir(e.path.parent().unwrap_or(Path::new(".")))

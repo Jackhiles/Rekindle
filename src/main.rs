@@ -23,6 +23,10 @@ struct Cli {
     /// Without one, the game library (launcher) opens.
     game: Option<PathBuf>,
 
+    /// Write Rekindle's icon as a PNG (used when packaging, e.g. the AppImage).
+    #[arg(long, value_name = "FILE", hide = true)]
+    write_icon: Option<PathBuf>,
+
     /// Add a game file, or every Fusion game in a folder, to the launcher's library; repeatable.
     #[arg(long, value_name = "FILE|DIR")]
     add: Vec<PathBuf>,
@@ -122,6 +126,10 @@ fn main() -> Result<()> {
     rekindle::log::install_panic_hook();
     if let Some(target) = &cli.scenario {
         return run_scenarios(target);
+    }
+    if let Some(out) = &cli.write_icon {
+        rekindle::launcher::library::write_png(out, 256, &rekindle::launcher::flame_icon(256))?;
+        return Ok(());
     }
     if !cli.add.is_empty() {
         use rekindle::launcher::library;

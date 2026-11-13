@@ -86,7 +86,8 @@ Release builds of the launcher check GitHub for a newer release when they start 
 (see `.github/workflows/release.yml`).
 
 ### Linux and Steam Deck
-Download `rekindle-linux-x86_64` from the releases page, make it executable (`chmod +x rekindle-linux-x86_64`) and
+Download `Rekindle-x86_64.AppImage` (with icon and app-menu entry; on the Steam Deck, Gear Lever adds it to the menu
+in one click) or the plain `rekindle-linux-x86_64` from the releases page, make it executable (`chmod +x ...`) and
 run it; on the Deck, do that in desktop mode and add it to Steam as a non-Steam game to use it in game mode. Steam
 Input's keyboard-and-mouse templates map the Deck's controls for the games. Add games with "Add folder..." (uses the
 desktop's own picker, kdialog or zenity) or `rekindle-linux-x86_64 --add ~/Games`.
