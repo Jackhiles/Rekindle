@@ -14,27 +14,37 @@ use super::{arg_i, arg_s, Extension};
 use crate::ctf_loader::events::Comparison;
 use crate::runtime::files::SaveFs;
 use crate::runtime::value::Value;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const DEFAULT_SIZE: usize = 200;
 
+/// The store is global: every Global Store X object in the game shares it.
+pub type Store = Rc<RefCell<Vec<i32>>>;
+
+pub fn new_store() -> Store {
+    Rc::new(RefCell::new(vec![0; DEFAULT_SIZE]))
+}
+
 pub struct GlobalStore {
-    values: Vec<i32>,
+    values: Store,
 }
 
 impl Default for GlobalStore {
     fn default() -> Self {
-        Self {
-            values: vec![0; DEFAULT_SIZE],
-        }
+        Self { values: new_store() }
     }
 }
 
 impl GlobalStore {
+    pub fn with_store(values: Store) -> Self {
+        Self { values }
+    }
+
     fn get(&self, i: i32) -> i32 {
         usize::try_from(i)
             .ok()
-            .and_then(|i| self.values.get(i))
-            .copied()
+            .and_then(|i| self.values.borrow().get(i).copied())
             .unwrap_or(0)
     }
 
@@ -43,18 +53,20 @@ impl GlobalStore {
         if i >= 100_000 {
             return;
         }
-        if i >= self.values.len() {
-            self.values.resize(i + 1, 0);
+        let mut values = self.values.borrow_mut();
+        if i >= values.len() {
+            values.resize(i + 1, 0);
         }
-        self.values[i] = v;
+        values[i] = v;
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(22 + self.values.len() * 4);
+        let values = self.values.borrow();
+        let mut out = Vec::with_capacity(22 + values.len() * 4);
         out.extend_from_slice(&3u16.to_le_bytes());
-        out.extend_from_slice(&(self.values.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(values.len() as u32).to_le_bytes());
         out.push(0);
-        for v in &self.values {
+        for v in values.iter() {
             out.extend_from_slice(&v.to_le_bytes());
         }
         for _ in 0..3 {
@@ -98,7 +110,7 @@ impl Extension for GlobalStore {
                     self.set(k, value);
                 }
             }
-            10 => self.values.iter_mut().for_each(|v| *v = 0),
+            10 => self.values.borrow_mut().iter_mut().for_each(|v| *v = 0),
             29 => {
                 let path = arg_s(args, 0);
                 if let Err(e) = fs.write(&path, &self.encode()) {
@@ -107,11 +119,11 @@ impl Extension for GlobalStore {
             }
             30 | 33 => {
                 let path = arg_s(args, 0);
-                if let Some(values) = fs.read(&path).and_then(|b| Self::decode(&b)) {
-                    self.values = values;
-                    if self.values.len() < DEFAULT_SIZE {
-                        self.values.resize(DEFAULT_SIZE, 0);
+                if let Some(mut values) = fs.read(&path).and_then(|b| Self::decode(&b)) {
+                    if values.len() < DEFAULT_SIZE {
+                        values.resize(DEFAULT_SIZE, 0);
                     }
+                    *self.values.borrow_mut() = values;
                 }
             }
             _ => return false,

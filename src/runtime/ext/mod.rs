@@ -20,11 +20,22 @@ pub trait Extension {
     fn expression(&self, idx: usize, args: &[Value], fs: &SaveFs) -> Option<Value>;
 }
 
+/// State shared by all objects of an extension (per running game).
+pub struct Shared {
+    gsx: gsx::Store,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self { gsx: gsx::new_store() }
+    }
+}
+
 /// Create the native implementation for an extension file name (e.g. "kcini"), if we have one.
-pub fn create(name: &str) -> Option<Box<dyn Extension>> {
+pub fn create(name: &str, shared: &Shared) -> Option<Box<dyn Extension>> {
     match name.to_ascii_lowercase().as_str() {
         "kcini" => Some(Box::new(ini::Ini::default())),
-        "gstorex" => Some(Box::new(gsx::GlobalStore::default())),
+        "gstorex" => Some(Box::new(gsx::GlobalStore::with_store(shared.gsx.clone()))),
         "kcclock" => Some(Box::new(clock::Clock)),
         _ => None,
     }

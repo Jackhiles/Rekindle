@@ -11,8 +11,10 @@
 //! click 200 320 240          # left-click at (320, 240) at tick 200 (also `rclick`, `mouse`)
 //! run 900                    # advance to tick 900
 //! dump door                  # debug: log objects whose name contains "door"
+//! dump_files                 # debug: log the save files written so far
 //! expect_frame prologue      # current frame, by name or index
 //! expect "door" value 0 = 1  # an object's state: counter | value N | x | y | visible, with = != < > <= >=
+//! expect "door" @2 x > 100   # only the 2nd instance named "door"
 //! expect_visited title       # frame entered at some point
 //! expect_save app/save1.txt  # file written into the (temporary) save folder
 //! sweep 300                  # run every frame for 300 ticks
@@ -148,6 +150,12 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                                 inst.anim.anim, inst.anim.frame, inst.values.iter().take(6).map(|v| v.to_string()).collect::<Vec<_>>(), inst.counter, d.last_mouse, d.rt.scroll
                             ));
                             if let crate::ctf_loader::ObjectProperties::Common(c) = &obj.props {
+                                if let Some(data) = &c.extension_data {
+                                    let hex: Vec<String> = data.iter().take(96).map(|b| format!("{b:02x}")).collect();
+                                    let text: String = data.iter().take(96).map(|&b| if (32..127).contains(&b) { b as char } else { '.' }).collect();
+                                    result.log.push(format!("    ext data {} bytes: {}
+      {text}", data.len(), hex.join(" ")));
+                                }
                                 if let Some(m) = c.movements.first() {
                                     let mv = format!("{:?}", m.kind);
                                     result.log.push(format!("    movement {} start {:?}", &mv[..mv.len().min(160)], inst.movement.start));
@@ -172,6 +180,23 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                     "expect_save" => {
                         if !d.save_root.join(rest).is_file() {
                             result.failures.push(at(&format!("no save file {rest}")));
+                        }
+                    }
+                    "dump_files" => {
+                        // Debug: list the save sandbox with the start of each text file.
+                        let mut stack = vec![d.save_root.clone()];
+                        while let Some(dir) = stack.pop() {
+                            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                                let p = e.path();
+                                if p.is_dir() {
+                                    stack.push(p);
+                                    continue;
+                                }
+                                let text = std::fs::read_to_string(&p).unwrap_or_default();
+                                let short: String = text.chars().take(600).collect();
+                                result.log.push(format!("file {}:
+{short}", p.display()));
+                            }
                         }
                     }
                     "expect" => match check_object(&d.rt, rest) {
@@ -203,7 +228,16 @@ fn check_object(rt: &Runtime, rest: &str) -> std::result::Result<Option<String>,
         .strip_prefix('"')
         .and_then(|r| r.split_once('"'))
         .ok_or("expect: object name must be in quotes")?;
-    let mut words = tail.split_whitespace();
+    let mut words = tail.split_whitespace().peekable();
+    // Optional `@N`: only the Nth instance (1-based, creation order).
+    let nth = match words.peek() {
+        Some(w) if w.starts_with('@') => {
+            let n = w[1..].parse::<usize>().map_err(|_| "expect: bad @N")?;
+            words.next();
+            Some(n.max(1) - 1)
+        }
+        _ => None,
+    };
     let field = words.next().ok_or("expect: missing field")?;
     let index = if field == "value" {
         Some(words.next().and_then(|w| w.parse::<usize>().ok()).ok_or("expect: value needs an index")?)
@@ -225,9 +259,11 @@ fn check_object(rt: &Runtime, rest: &str) -> std::result::Result<Option<String>,
         return Err(format!("expect: unknown operator `{op}`"));
     }
     let mut seen = Vec::new();
-    for inst in rt.instances.iter().filter(|i| !i.destroyed) {
-        let Some(obj) = rt.game.object(inst.oi) else { continue };
-        if !obj.name.eq_ignore_ascii_case(name) {
+    let named = rt.instances.iter().filter(|i| {
+        !i.destroyed && rt.game.object(i.oi).is_some_and(|o| o.name.eq_ignore_ascii_case(name))
+    });
+    for (k, inst) in named.enumerate() {
+        if nth.is_some_and(|n| n != k) {
             continue;
         }
         let v = match field {

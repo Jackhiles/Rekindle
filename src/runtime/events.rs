@@ -367,7 +367,7 @@ impl Runtime {
             }
             if loop_name.is_none()
                 && !self.end_of_frame_pass
-                && is_triggered_input(group) != self.triggered_pass
+                && trigger_kind(group) != self.triggered_pass
             {
                 continue;
             }
@@ -678,7 +678,7 @@ impl Runtime {
             let (args, cmp) = self.ext_args(c, sel, None);
             let r = self
                 .exts
-                .get(&c.object_type)
+                .get(&oi)
                 .and_then(|e| e.condition(idx, &args, cmp, &self.files));
             let Some(r) = r else {
                 self.note_unimplemented(
@@ -1181,10 +1181,11 @@ impl Runtime {
                 return;
             }
         }
-        if let ObjectKind::Extension(t) = kind {
+        if let ObjectKind::Extension(_) = kind {
             if a.num >= 80 {
                 let (args, _) = self.ext_args(a, sel, cur);
-                let handled = match self.exts.get_mut(&t) {
+                let oi = self.instances[idx].oi;
+                let handled = match self.exts.get_mut(&oi) {
                     Some(e) => e.action((a.num - 80) as usize, &args, &self.files),
                     None => false,
                 };
@@ -1535,13 +1536,26 @@ impl Runtime {
     }
 }
 
-/// An event that starts with a triggered input condition ("upon pressing a key",
-/// "user clicks", "user clicks on an object"). Fusion runs these when the input
-/// arrives, before the frame's main pass through the event list.
-fn is_triggered_input(group: &EventGroup) -> bool {
-    group.conditions.first().is_some_and(|c| {
-        c.object_type == MOUSE && !c.negated() && matches!(c.num, -1 | -5 | -6 | -7 | -9)
-    })
+/// Which pass runs an event. Fusion runs events that start with a triggered condition
+/// when the trigger happens, before the main pass through the event list:
+/// "start of frame" when the frame begins, and input conditions ("upon pressing a key",
+/// "user clicks", "user clicks on an object") when the input arrives.
+fn trigger_kind(group: &EventGroup) -> Trigger {
+    match group.conditions.first() {
+        Some(c) if c.negated() => Trigger::None,
+        Some(c) if c.object_type == MOUSE && matches!(c.num, -1 | -5 | -6 | -7 | -9) => Trigger::Input,
+        Some(c) if c.object_type == GAME && c.num == -1 => Trigger::StartOfFrame,
+        _ => Trigger::None,
+    }
+}
+
+/// See [`trigger_kind`]. `None` = the main pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(super) enum Trigger {
+    #[default]
+    None,
+    StartOfFrame,
+    Input,
 }
 
 #[cfg(test)]

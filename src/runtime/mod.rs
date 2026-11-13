@@ -170,11 +170,13 @@ pub struct Runtime {
     /// Sandboxed file access for saves.
     pub files: files::SaveFs,
     /// Native extension implementations, one per extension type (they persist across frames).
-    exts: HashMap<i16, Box<dyn ext::Extension>>,
+    /// Native extension state per object (two Ini objects keep separate files).
+    exts: HashMap<u16, Box<dyn ext::Extension>>,
+    ext_shared: ext::Shared,
     /// True while running the "end of frame" events before a frame change.
     end_of_frame_pass: bool,
     /// Running only triggered input events ("upon pressing a key", "user clicks").
-    triggered_pass: bool,
+    triggered_pass: events::Trigger,
     /// Frame fade currently playing.
     pub transition: Option<TransitionState>,
     /// Name of an object whose image replaces the mouse pointer (Cursor extension).
@@ -260,8 +262,9 @@ impl Runtime {
             frame_log: Vec::new(),
             files,
             exts: HashMap::new(),
+            ext_shared: ext::Shared::default(),
             end_of_frame_pass: false,
-            triggered_pass: false,
+            triggered_pass: events::Trigger::None,
             transition: None,
             cursor_object: None,
             masks: RefCell::new(HashMap::new()),
@@ -342,14 +345,14 @@ impl Runtime {
     pub fn create_instance(&mut self, oi: u16, x: f64, y: f64, layer: usize) -> Option<usize> {
         let obj = self.game.object(oi)?;
         if let ObjectKind::Extension(t) = obj.kind {
-            if !self.exts.contains_key(&t) {
+            if !self.exts.contains_key(&oi) {
                 let ext = self
                     .game
                     .extensions
                     .iter()
                     .find(|e| e.handle as i32 == t as i32 - 32);
-                if let Some(imp) = ext.and_then(|e| ext::create(&e.name)) {
-                    self.exts.insert(t, imp);
+                if let Some(imp) = ext.and_then(|e| ext::create(&e.name, &self.ext_shared)) {
+                    self.exts.insert(oi, imp);
                 }
             }
         }
@@ -421,11 +424,15 @@ impl Runtime {
         let any_input = !input.pressed.is_empty()
             || input.clicked.iter().any(|&c| c)
             || input.double_clicked.iter().any(|&c| c);
-        if any_input {
-            self.triggered_pass = true;
+        if self.tick == 0 {
+            self.triggered_pass = events::Trigger::StartOfFrame;
             self.run_events(input, None);
-            self.triggered_pass = false;
         }
+        if any_input && self.pending.is_none() {
+            self.triggered_pass = events::Trigger::Input;
+            self.run_events(input, None);
+        }
+        self.triggered_pass = events::Trigger::None;
         self.run_events(input, None);
         self.group_just_activated.clear();
 
@@ -799,13 +806,8 @@ impl Runtime {
             .clone()
     }
 
-    pub(crate) fn ext_expression(
-        &self,
-        ext_type: i16,
-        idx: usize,
-        args: &[Value],
-    ) -> Option<Value> {
-        self.exts.get(&ext_type)?.expression(idx, args, &self.files)
+    pub(crate) fn ext_expression(&self, oi: u16, idx: usize, args: &[Value]) -> Option<Value> {
+        self.exts.get(&oi)?.expression(idx, args, &self.files)
     }
 
     /// Image (handle) of the object used as the mouse pointer, if any.

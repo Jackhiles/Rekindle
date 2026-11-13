@@ -305,13 +305,13 @@ impl<'a> Eval<'a> {
         if t.num == 15 {
             return Value::Int(rt.candidates(oi, self.sel).len() as i32);
         }
-        if let ObjectKind::Extension(ext_type) = rt
+        if let ObjectKind::Extension(_) = rt
             .game
             .object(oi)
             .map_or(ObjectKind::Unknown(0), |o| o.kind)
         {
             if t.num >= 80 {
-                let r = rt.ext_expression(ext_type, (t.num - 80) as usize, a);
+                let r = rt.ext_expression(oi, (t.num - 80) as usize, a);
                 return r.unwrap_or_else(|| {
                     rt.note_unimplemented(
                         format!("expr {}/{}", rt.ace_owner_label(t.object_type), t.num),
