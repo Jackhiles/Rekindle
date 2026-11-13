@@ -142,10 +142,16 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                             }
                             let (x1, y1, x2, y2) = d.rt.bounds_of(i);
                             result.log.push(format!(
-                                "tick {}: \"{}\" at ({:.0}, {:.0}) box ({x1:.0},{y1:.0})-({x2:.0},{y2:.0}) visible {} ink {} alpha {} anim {} frame {} value0 {:?} mouse {:?} scroll {:?}",
-                                d.tick, obj.name, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
+                                "tick {}: \"{}\" layer {} fixed {} at ({:.0}, {:.0}) box ({x1:.0},{y1:.0})-({x2:.0},{y2:.0}) visible {} ink {} alpha {} anim {} frame {} value0 {:?} mouse {:?} scroll {:?}",
+                                d.tick, obj.name, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
                                 inst.anim.anim, inst.anim.frame, inst.values.first(), d.last_mouse, d.rt.scroll
                             ));
+                            if let crate::ctf_loader::ObjectProperties::Common(c) = &obj.props {
+                                if let Some(m) = c.movements.first() {
+                                    let mv = format!("{:?}", m.kind);
+                                    result.log.push(format!("    movement {} start {:?}", &mv[..mv.len().min(160)], inst.movement.start));
+                                }
+                            }
                         }
                     }
                     "expect_frame" => {

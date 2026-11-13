@@ -79,4 +79,6 @@ pub struct SceneItem {
     pub scale: (f32, f32),
     /// Degrees, counter-clockwise around the hotspot.
     pub angle: f32,
+    /// Ignores scrolling (drawn at screen coordinates).
+    pub fixed: bool,
 }

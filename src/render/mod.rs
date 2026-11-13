@@ -689,6 +689,7 @@ impl Viewer {
         for item in &scene {
             let li = item.layer.min(layer_count - 1);
             let (layer_visible, coef) = layer_info[li];
+            let coef = if item.fixed { Vec2::ZERO } else { coef };
             if self.layer_off.get(li).copied().unwrap_or(false)
                 || (!layer_visible && !self.show_hidden)
             {

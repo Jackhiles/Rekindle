@@ -1020,6 +1020,7 @@ impl Runtime {
                     label,
                     scale: (inst.scale_x as f32, inst.scale_y as f32),
                     angle: inst.angle as f32,
+                    fixed: inst.fixed,
                 },
             ));
         }

@@ -254,11 +254,12 @@ impl Runtime {
     /// Mouse hit test. `x, y` are frame coordinates at full scroll; objects on layers that
     /// scroll less (e.g. a fixed HUD layer) are tested in their own layer's coordinates.
     fn point_in(&self, idx: usize, x: f64, y: f64) -> bool {
-        let (cx, cy) = self
-            .frame()
-            .layers
-            .get(self.instances[idx].layer)
-            .map_or((1.0, 1.0), |l| l.scroll_coefficients());
+        let inst = &self.instances[idx];
+        let (cx, cy) = if inst.fixed {
+            (0.0, 0.0)
+        } else {
+            self.frame().layers.get(inst.layer).map_or((1.0, 1.0), |l| l.scroll_coefficients())
+        };
         let x = x - self.scroll.0 * (1.0 - cx as f64);
         let y = y - self.scroll.1 * (1.0 - cy as f64);
         let (bx, by, bw, bh) = self.bounds_of(idx);
@@ -1194,14 +1195,20 @@ impl Runtime {
             (_, 1) => {
                 if let Some(Param::Position(p)) = a.params.first().map(|p| &p.value) {
                     if let Some((x, y, _, _)) = self.resolve_position(p, sel, cur) {
-                        let inst = &mut self.instances[idx];
-                        inst.x = x;
-                        inst.y = y;
+                        self.instances[idx].set_position(x, y);
                     }
                 }
             }
-            (_, 2) => self.instances[idx].x = self.eval_param(a, 0, sel, cur).as_f64(),
-            (_, 3) => self.instances[idx].y = self.eval_param(a, 0, sel, cur).as_f64(),
+            (_, 2) => {
+                let x = self.eval_param(a, 0, sel, cur).as_f64();
+                let y = self.instances[idx].y;
+                self.instances[idx].set_position(x, y);
+            }
+            (_, 3) => {
+                let y = self.eval_param(a, 0, sel, cur).as_f64();
+                let x = self.instances[idx].x;
+                self.instances[idx].set_position(x, y);
+            }
             (_, 4) => {
                 // "Stop" in a collision event moves the object back out of the obstacle
                 // (only relevant if it moved this tick).

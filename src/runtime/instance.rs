@@ -88,9 +88,20 @@ pub struct Instance {
     pub pasted: bool,
     pub text_color: Option<[u8; 4]>,
     pub font_size: Option<f32>,
+    /// "Follow the frame" is off: the position is in screen coordinates and ignores scrolling.
+    pub fixed: bool,
 }
 
 impl Instance {
+    /// Move the object from an action. The movement's origin (where a path restarts with
+    /// "reposition at end") moves along with it.
+    pub fn set_position(&mut self, x: f64, y: f64) {
+        self.movement.start.0 += x - self.x;
+        self.movement.start.1 += y - self.y;
+        self.x = x;
+        self.y = y;
+    }
+
     /// Settings of a distortion-effect object, if this is one.
     pub fn effect_params(&self) -> Option<crate::render::scene::EffectParams> {
         match &self.visual {
@@ -156,6 +167,7 @@ impl Instance {
             pasted: false,
             text_color: None,
             font_size: None,
+            fixed: false,
         };
         match &obj.props {
             ObjectProperties::Backdrop(b) => {
@@ -176,6 +188,7 @@ impl Instance {
             }
             ObjectProperties::Common(c) => {
                 inst.visible = c.visible_at_start();
+                inst.fixed = c.flags & crate::ctf_loader::properties::oc_flags::SCROLLING_INDEPENDENT != 0;
                 inst.values = c.alterable_values.iter().map(|&v| Value::Int(v)).collect();
                 inst.strings = c.alterable_strings.clone();
                 if let Some(cs) = &c.counter {
