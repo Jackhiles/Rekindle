@@ -1069,7 +1069,16 @@ impl Viewer {
         for item in &scene {
             let li = item.layer.min(layer_count - 1);
             let (layer_visible, coef) = layer_info[li];
-            let coef = if item.fixed { Vec2::ZERO } else { coef };
+            // While the game runs, partially scrolling layers have already moved their
+            // objects with the camera (see Runtime::center_display); the static viewer
+            // applies the layer's coefficient instead.
+            let coef = if item.fixed {
+                Vec2::ZERO
+            } else if self.running {
+                Vec2::ONE
+            } else {
+                coef
+            };
             if self.layer_off.get(li).copied().unwrap_or(false)
                 || (!layer_visible && !self.show_hidden)
             {

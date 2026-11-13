@@ -333,15 +333,15 @@ impl Runtime {
         self.mouse_over(idx, x, y)
     }
 
-    /// Mouse position in the coordinates of the instance's layer.
+    /// Mouse position in the instance's coordinates: frame coordinates, except for objects
+    /// fixed to the screen. (Partially scrolling layers move their objects as the camera
+    /// scrolls, so frame coordinates hold there too.)
     pub(super) fn layer_mouse(&self, idx: usize, x: f64, y: f64) -> (f64, f64) {
-        let inst = &self.instances[idx];
-        let (cx, cy) = if inst.fixed {
-            (0.0, 0.0)
+        if self.instances[idx].fixed {
+            (x - self.scroll.0, y - self.scroll.1)
         } else {
-            self.frame().layers.get(inst.layer).map_or((1.0, 1.0), |l| l.scroll_coefficients())
-        };
-        (x - self.scroll.0 * (1.0 - cx as f64), y - self.scroll.1 * (1.0 - cy as f64))
+            (x, y)
+        }
     }
 
     pub(super) fn mouse_over(&self, idx: usize, x: f64, y: f64) -> bool {
@@ -1726,8 +1726,12 @@ impl Runtime {
         }
         // Relative to an object: Fusion uses the parent's layer, not the parameter's.
         let layer = pi.layer.min(max_layer);
+        // Direction: the parent's ("initial direction"), the object's default, or the one
+        // chosen in the parameter.
         let dir = if p.flags & position_flags::INITIAL_DIRECTION != 0 {
             Some(pi.direction())
+        } else if p.flags & position_flags::DEFAULT_DIRECTION == 0 && p.direction >= 0 {
+            Some(p.direction as usize % 32)
         } else {
             None
         };

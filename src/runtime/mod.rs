@@ -944,11 +944,39 @@ impl Runtime {
     fn center_display(&mut self, x: Option<f64>, y: Option<f64>) {
         let (fw, fh) = (self.frame().width as f64, self.frame().height as f64);
         let (vw, vh) = self.view_size;
+        let old = self.scroll;
         if let Some(x) = x {
             self.scroll.0 = (x - vw / 2.0).clamp(0.0, (fw - vw).max(0.0));
         }
         if let Some(y) = y {
             self.scroll.1 = (y - vh / 2.0).clamp(0.0, (fh - vh).max(0.0));
+        }
+        self.shift_partial_layers(self.scroll.0 - old.0, self.scroll.1 - old.1);
+    }
+
+    /// Objects keep frame coordinates on every layer; a layer that scrolls at a fraction c
+    /// of the camera gets its objects moved by (1 - c) of each scroll step, as the original
+    /// runtime does. (So a HUD on a non-scrolling layer stays on screen while its objects'
+    /// coordinates follow the camera, and "set Y to the camera position" lands on screen.)
+    fn shift_partial_layers(&mut self, dx: f64, dy: f64) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let coefs: Vec<(f64, f64)> = self
+            .frame()
+            .layers
+            .iter()
+            .map(|l| {
+                let (cx, cy) = l.scroll_coefficients();
+                (1.0 - cx as f64, 1.0 - cy as f64)
+            })
+            .collect();
+        for inst in self.instances.iter_mut().filter(|i| !i.destroyed && !i.fixed) {
+            let Some(&(kx, ky)) = coefs.get(inst.layer) else { continue };
+            if kx != 0.0 || ky != 0.0 {
+                inst.x += dx * kx;
+                inst.y += dy * ky;
+            }
         }
     }
 
