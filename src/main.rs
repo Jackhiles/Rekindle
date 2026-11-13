@@ -278,7 +278,9 @@ fn run_headless(
     presses: &[(u64, u16)],
     save_dir: Option<PathBuf>,
 ) {
-    let mut rt = runtime::Runtime::with_save_root(game, start, save_dir);
+    // A test run: its saves go to a temporary folder unless --save-dir says otherwise.
+    let temp = std::env::temp_dir().join(format!("rekindle-headless-{}", std::process::id()));
+    let mut rt = runtime::Runtime::with_save_root(game, start, Some(save_dir.unwrap_or_else(|| temp.clone())));
     println!("saves: {}", rt.files.save_root.display());
     let mut input = runtime::Input::default();
     let t = Instant::now();
@@ -333,6 +335,7 @@ fn run_headless(
     for (k, n) in v.iter().take(25) {
         println!("  {n:8}  {k}");
     }
+    let _ = std::fs::remove_dir_all(&temp);
 }
 
 /// Compatibility sweep: every frame, N ticks each, then the unsupported features hit overall.
