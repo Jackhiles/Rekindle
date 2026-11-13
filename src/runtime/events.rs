@@ -344,10 +344,15 @@ impl Runtime {
         }
     }
 
+    /// Mouse over an object: its solid pixels (or its box, for box-collision objects), like
+    /// the original runtime.
     pub(super) fn mouse_over(&self, idx: usize, x: f64, y: f64) -> bool {
         let (x, y) = self.layer_mouse(idx, x, y);
         let (bx, by, bw, bh) = self.bounds_of(idx);
-        x >= bx && x < bx + bw && y >= by && y < by + bh
+        if !(x >= bx && x < bx + bw && y >= by && y < by + bh) {
+            return false;
+        }
+        self.collision_shape(idx).contains(x, y)
     }
 
     // ---------- parameter helpers ----------

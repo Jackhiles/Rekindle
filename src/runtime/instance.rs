@@ -53,6 +53,8 @@ pub struct MoveState {
     pub on_ground: bool,
     /// Animation the movement wants (walking, jumping, falling), if the object has it.
     pub anim_hint: Option<usize>,
+    /// Mouse movement: the pointer's position in the window last tick.
+    pub last_mouse: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -384,7 +386,8 @@ impl Instance {
     }
 
     /// Advance the object's movement by one tick.
-    pub fn update_movement(&mut self, obj: &ObjectInfo, input: &Input, controls: &PlayerControls) {
+    /// `screen_mouse`: the mouse position in the window (game pixels), for mouse movement.
+    pub fn update_movement(&mut self, obj: &ObjectInfo, input: &Input, controls: &PlayerControls, screen_mouse: (f64, f64)) {
         let ObjectProperties::Common(c) = &obj.props else {
             return;
         };
@@ -423,10 +426,18 @@ impl Instance {
                 let a = dir_to_angle(dir);
                 self.shift(a.cos() * s, -a.sin() * s);
             }
+            // Moves by as much as the mouse moved in the window, within its area around
+            // where it started (so an office that pans with the mouse is centred while the
+            // pointer is, and following the pointer's frame position can't run away when
+            // the camera follows the object).
             MovementKind::Mouse { x1, x2, y1, y2 } => {
-                let (sx, sy) = self.movement.start;
-                self.x = input.mouse.0.clamp(sx + *x1 as f64, sx + *x2 as f64);
-                self.y = input.mouse.1.clamp(sy + *y1 as f64, sy + *y2 as f64);
+                if let Some((px, py)) = self.movement.last_mouse {
+                    let (sx, sy) = self.movement.start;
+                    let (dx, dy) = (screen_mouse.0 - px, screen_mouse.1 - py);
+                    self.x = (self.x + dx).clamp(sx + *x1 as f64, sx + *x2 as f64);
+                    self.y = (self.y + dy).clamp(sy + *y1 as f64, sy + *y2 as f64);
+                }
+                self.movement.last_mouse = Some(screen_mouse);
             }
             MovementKind::Path {
                 steps,

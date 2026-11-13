@@ -149,12 +149,25 @@ pub fn print_info(g: &GameData, verbose: bool) {
                     .unwrap_or_default(),
                 _ => String::new(),
             };
+            // Movement types (all of an object's movements, in order).
+            let moves = match &o.props {
+                rekindle::ctf_loader::properties::ObjectProperties::Common(c) if !c.movements.is_empty() => {
+                    let names: Vec<String> = c
+                        .movements
+                        .iter()
+                        .map(|m| format!("{:?}", m.kind).split([' ', '{', '(']).next().unwrap_or("").to_string())
+                        .collect();
+                    format!("  [{}]", names.join(", "))
+                }
+                _ => String::new(),
+            };
             println!(
-                "    #{:<5} {:<18} {}{}",
+                "    #{:<5} {:<18} {}{}{}",
                 o.handle,
                 o.kind.label(),
                 o.name,
-                ext
+                ext,
+                moves
             );
         }
     }

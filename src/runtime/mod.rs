@@ -549,6 +549,7 @@ impl Runtime {
         }
         let controls = self.game.header.controls[0].clone();
         self.update_platforms(input, &controls);
+        let screen_mouse = (input.mouse.0 - self.scroll.0, input.mouse.1 - self.scroll.1);
         let game = &self.game;
         for inst in self.instances.iter_mut().filter(|i| !i.destroyed) {
             let Some(obj) = game.object(inst.oi) else {
@@ -563,7 +564,7 @@ impl Runtime {
                 inst.x += a.cos() * s;
                 inst.y -= a.sin() * s;
             } else {
-                inst.update_movement(obj, input, &controls);
+                inst.update_movement(obj, input, &controls, screen_mouse);
             }
             inst.update_animation(obj);
         }
