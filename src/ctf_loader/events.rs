@@ -468,7 +468,8 @@ fn parse_tokens(r: &mut ByteReader, unicode: bool, old: bool) -> Result<Vec<Toke
             _ => {}
         }
         out.push(t);
-        if size < 6 {
+        // A token is at least its header: type + num (1 + 1 bytes in 1.5, 2 + 2 later) + size.
+        if size < if old { 4 } else { 6 } {
             bail!("bad expression token size {size}");
         }
         r.seek(start + size)?;

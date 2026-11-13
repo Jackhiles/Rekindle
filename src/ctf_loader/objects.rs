@@ -72,6 +72,14 @@ pub fn system_type_name(t: i16) -> Option<&'static str> {
     })
 }
 
+/// `ObjectInfo::flags` bits.
+pub mod object_flags {
+    pub const LOAD_ON_CALL: u16 = 0x0001;
+    pub const DISCARDABLE: u16 = 0x0002;
+    /// Keeps its values when the game moves to another frame that has the object.
+    pub const GLOBAL: u16 = 0x0004;
+}
+
 #[derive(Debug, Clone)]
 pub struct ObjectInfo {
     pub handle: u16,

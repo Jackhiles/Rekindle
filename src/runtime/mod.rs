@@ -125,6 +125,15 @@ pub type EventProfile = HashMap<(usize, usize), (std::time::Duration, u64)>;
 
 type ObstacleCache = ((u64, usize), Vec<(usize, u16, (f64, f64, f64, f64))>);
 
+/// What a global object keeps between frames.
+#[derive(Debug, Clone)]
+struct GlobalObjectState {
+    values: Vec<Value>,
+    strings: Vec<String>,
+    counter: Value,
+    text: String,
+}
+
 pub struct Runtime {
     pub game: GameData,
     pub frame_index: usize,
@@ -173,6 +182,8 @@ pub struct Runtime {
     /// Native extension state per object (two Ini objects keep separate files).
     exts: HashMap<u16, Box<dyn ext::Extension>>,
     ext_shared: ext::Shared,
+    /// State of "global" objects, carried into the next frame that has them.
+    globals: HashMap<u16, GlobalObjectState>,
     /// True while running the "end of frame" events before a frame change.
     end_of_frame_pass: bool,
     /// Running only triggered input events ("upon pressing a key", "user clicks").
@@ -263,6 +274,7 @@ impl Runtime {
             files,
             exts: HashMap::new(),
             ext_shared: ext::Shared::default(),
+            globals: HashMap::new(),
             end_of_frame_pass: false,
             triggered_pass: events::Trigger::None,
             transition: None,
@@ -287,6 +299,7 @@ impl Runtime {
         }
         self.frame_index = index.min(self.game.frames.len() - 1);
         self.frame_log.push(self.frame_index);
+        self.remember_globals();
         self.instances.clear();
         self.invalidate_index();
         self.bullets.clear();
@@ -337,7 +350,37 @@ impl Runtime {
             })
             .collect();
         for (oi, x, y, layer) in placed {
-            self.create_instance(oi, x, y, layer);
+            if let Some(i) = self.create_instance(oi, x, y, layer) {
+                if let Some(g) = self.globals.get(&oi) {
+                    let inst = &mut self.instances[i];
+                    inst.values = g.values.clone();
+                    inst.strings = g.strings.clone();
+                    inst.counter = g.counter.clone();
+                    inst.text = g.text.clone();
+                }
+            }
+        }
+    }
+
+    /// Keep the state of objects marked "global" for the next frame (first instance of each).
+    fn remember_globals(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        for inst in self.instances.iter().filter(|i| !i.destroyed && !i.pasted) {
+            let global = self
+                .game
+                .object(inst.oi)
+                .is_some_and(|o| o.flags & crate::ctf_loader::objects::object_flags::GLOBAL != 0);
+            if global && seen.insert(inst.oi) {
+                self.globals.insert(
+                    inst.oi,
+                    GlobalObjectState {
+                        values: inst.values.clone(),
+                        strings: inst.strings.clone(),
+                        counter: inst.counter.clone(),
+                        text: inst.text.clone(),
+                    },
+                );
+            }
         }
     }
 

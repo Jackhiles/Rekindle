@@ -12,6 +12,7 @@
 //! run 900                    # advance to tick 900
 //! dump door                  # debug: log objects whose name contains "door"
 //! dump_files                 # debug: log the save files written so far
+//! set "door" value 0 5       # put an object into a state (counter V | value N V)
 //! expect_frame prologue      # current frame, by name or index
 //! expect "door" value 0 = 1  # an object's state: counter | value N | x | y | visible, with = != < > <= >=
 //! expect "door" @2 x > 100   # only the 2nd instance named "door"
@@ -22,6 +23,7 @@
 //! ```
 
 use super::script::InputScript;
+use super::value::Value;
 use super::{Input, Runtime};
 use crate::ctf_loader::GameData;
 use anyhow::{bail, Context, Result};
@@ -145,8 +147,8 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                             }
                             let (x1, y1, x2, y2) = d.rt.bounds_of(i);
                             result.log.push(format!(
-                                "tick {}: \"{}\" layer {} fixed {} at ({:.0}, {:.0}) box ({x1:.0},{y1:.0})-({x2:.0},{y2:.0}) visible {} ink {} alpha {} anim {} frame {} values {:?} counter {} mouse {:?} scroll {:?}",
-                                d.tick, obj.name, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
+                                "tick {}: \"{}\" oflags {:#x} layer {} fixed {} at ({:.0}, {:.0}) box ({x1:.0},{y1:.0})-({x2:.0},{y2:.0}) visible {} ink {} alpha {} anim {} frame {} values {:?} counter {} mouse {:?} scroll {:?}",
+                                d.tick, obj.name, obj.flags, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
                                 inst.anim.anim, inst.anim.frame, inst.values.iter().take(6).map(|v| v.to_string()).collect::<Vec<_>>(), inst.counter, d.last_mouse, d.rt.scroll
                             ));
                             if let crate::ctf_loader::ObjectProperties::Common(c) = &obj.props {
@@ -196,6 +198,43 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                                 let short: String = text.chars().take(600).collect();
                                 result.log.push(format!("file {}:
 {short}", p.display()));
+                            }
+                        }
+                    }
+                    "set" => {
+                        // `set "name" counter V` / `set "name" value N V`: put a game into a state.
+                        let (name, tail) = rest
+                            .strip_prefix('"')
+                            .and_then(|r| r.split_once('"'))
+                            .ok_or_else(|| anyhow::anyhow!(at("set: object name must be in quotes")))?;
+                        let w: Vec<&str> = tail.split_whitespace().collect();
+                        let num = |i: usize| -> Result<f64> {
+                            w.get(i).and_then(|x| x.parse().ok()).ok_or_else(|| anyhow::anyhow!(at("set: expected a number")))
+                        };
+                        let (field, index, v) = match w.first() {
+                            Some(&"counter") => ("counter", 0, num(1)?),
+                            Some(&"value") => ("value", num(1)? as usize, num(2)?),
+                            _ => bail!(at("set: field must be counter or value")),
+                        };
+                        let value = if v.fract() == 0.0 { Value::Int(v as i32) } else { Value::Float(v) };
+                        let game = &d.rt.game;
+                        let hits: Vec<usize> = d
+                            .rt
+                            .instances
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, i)| !i.destroyed && game.object(i.oi).is_some_and(|o| o.name.eq_ignore_ascii_case(name)))
+                            .map(|(k, _)| k)
+                            .collect();
+                        if hits.is_empty() {
+                            result.failures.push(at(&format!("set: no object \"{name}\"")));
+                        }
+                        for k in hits {
+                            let inst = &mut d.rt.instances[k];
+                            if field == "counter" {
+                                inst.counter = value.clone();
+                            } else {
+                                inst.set_value(index, value.clone());
                             }
                         }
                     }
