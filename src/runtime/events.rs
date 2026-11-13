@@ -254,14 +254,22 @@ impl Runtime {
     /// Mouse hit test. `x, y` are frame coordinates at full scroll; objects on layers that
     /// scroll less (e.g. a fixed HUD layer) are tested in their own layer's coordinates.
     fn point_in(&self, idx: usize, x: f64, y: f64) -> bool {
+        self.mouse_over(idx, x, y)
+    }
+
+    /// Mouse position in the coordinates of the instance's layer.
+    pub(super) fn layer_mouse(&self, idx: usize, x: f64, y: f64) -> (f64, f64) {
         let inst = &self.instances[idx];
         let (cx, cy) = if inst.fixed {
             (0.0, 0.0)
         } else {
             self.frame().layers.get(inst.layer).map_or((1.0, 1.0), |l| l.scroll_coefficients())
         };
-        let x = x - self.scroll.0 * (1.0 - cx as f64);
-        let y = y - self.scroll.1 * (1.0 - cy as f64);
+        (x - self.scroll.0 * (1.0 - cx as f64), y - self.scroll.1 * (1.0 - cy as f64))
+    }
+
+    pub(super) fn mouse_over(&self, idx: usize, x: f64, y: f64) -> bool {
+        let (x, y) = self.layer_mouse(idx, x, y);
         let (bx, by, bw, bh) = self.bounds_of(idx);
         x >= bx && x < bx + bw && y >= by && y < by + bh
     }
@@ -327,6 +335,11 @@ impl Runtime {
             Some(Param::Sample { handle, .. }) => Some(*handle as u32),
             _ => None,
         }
+    }
+
+    /// Is `oi` one of the Windows-control widgets?
+    pub(super) fn is_widget_oi(&self, oi: u16) -> bool {
+        self.oi_has_widget(oi)
     }
 
     fn param_object(a: &Ace, i: usize) -> Option<u16> {
@@ -687,6 +700,12 @@ impl Runtime {
         neg: bool,
     ) -> bool {
         let oi = c.object_info;
+        if c.object_type >= 32 && c.num <= -81 && self.is_widget_oi(oi) {
+            let idx = (-(c.num as i32) - 81) as usize;
+            return self.filter(oi, sel, neg, |rt, _, i| {
+                rt.instances[i].widget.as_ref().and_then(|w| w.condition(idx)).unwrap_or(false)
+            });
+        }
         if c.object_type >= 32 && c.num <= -81 {
             let idx = (-(c.num as i32) - 81) as usize;
             let (args, cmp) = self.ext_args(c, sel, None);
@@ -1198,6 +1217,18 @@ impl Runtime {
             }
         }
         if let ObjectKind::Extension(_) = kind {
+            if a.num >= 80 && self.instances[idx].widget.is_some() {
+                let (args, _) = self.ext_args(a, sel, cur);
+                let files = &self.files;
+                let w = self.instances[idx].widget.as_mut().expect("checked");
+                let handled = w.action((a.num - 80) as usize, &args, files);
+                let shown = w.visible;
+                self.instances[idx].visible = shown;
+                if !handled {
+                    self.note_unimplemented(format!("act {}/{}", self.ace_owner_label(a.object_type), a.num), ());
+                }
+                return;
+            }
             if a.num >= 80 {
                 let (args, _) = self.ext_args(a, sel, cur);
                 let oi = self.instances[idx].oi;
@@ -1490,6 +1521,15 @@ impl Runtime {
                 }
             }
             (ObjectKind::Text, 80) => self.instances[idx].text.clear(),
+            // Display paragraph N (the paragraph parameter, as 1.5 data stores it).
+            (ObjectKind::Text, 84) if matches!(a.params.first().map(|p| &p.value), Some(Param::Short(_))) => {
+                let n = self.param_index(a, 0, sel, cur);
+                if let Some(ObjectProperties::Common(c)) = self.game.object(self.instances[idx].oi).map(|o| &o.props) {
+                    if let Some(p) = c.text.as_ref().and_then(|t| t.paragraphs.get(n)) {
+                        self.instances[idx].text = p.text.clone();
+                    }
+                }
+            }
             (ObjectKind::Text, 88) => {
                 self.instances[idx].text = self.eval_param(a, 0, sel, cur).as_string()
             }

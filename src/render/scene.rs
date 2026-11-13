@@ -26,6 +26,8 @@ pub enum Visual {
         h: f32,
         params: EffectParams,
     },
+    /// An edit box, list, button or combo box.
+    Widget(Box<crate::runtime::widgets::Widget>),
     /// Something we can't draw (extensions); shown only in debug view.
     Placeholder { w: f32, h: f32 },
 }

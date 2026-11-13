@@ -151,6 +151,12 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                                 d.tick, obj.name, obj.flags, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
                                 inst.anim.anim, inst.anim.frame, inst.values.iter().take(6).map(|v| v.to_string()).collect::<Vec<_>>(), inst.counter, d.last_mouse, d.rt.scroll
                             ));
+                            if let Some(w) = &inst.widget {
+                                result.log.push(format!(
+                                    "    widget {:?} {}x{} text {:?} lines {} current {} visible {} focused {} font {} {}px",
+                                    w.kind, w.w, w.h, w.text, w.lines.len(), w.current, w.visible, w.focused, w.font_face, w.font_px
+                                ));
+                            }
                             if !inst.background {
                                 if let Some(o) = d.rt.obstacle_hit(i, true) {
                                     let b = &d.rt.instances[o];
@@ -164,8 +170,8 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                             }
                             if let crate::ctf_loader::ObjectProperties::Common(c) = &obj.props {
                                 if let Some(data) = &c.extension_data {
-                                    let hex: Vec<String> = data.iter().take(96).map(|b| format!("{b:02x}")).collect();
-                                    let text: String = data.iter().take(96).map(|&b| if (32..127).contains(&b) { b as char } else { '.' }).collect();
+                                    let hex: Vec<String> = data.iter().take(320).map(|b| format!("{b:02x}")).collect();
+                                    let text: String = data.iter().take(320).map(|&b| if (32..127).contains(&b) { b as char } else { '.' }).collect();
                                     result.log.push(format!("    ext data {} bytes: {}
       {text}", data.len(), hex.join(" ")));
                                 }

@@ -310,6 +310,15 @@ impl<'a> Eval<'a> {
             .object(oi)
             .map_or(ObjectKind::Unknown(0), |o| o.kind)
         {
+            if t.num >= 80 && rt.oi_has_widget(oi) {
+                let Some(idx) = rt.pick(oi, self.sel, self.cur) else {
+                    return Value::Int(0);
+                };
+                let r = rt.instances[idx].widget.as_ref().and_then(|w| w.expression((t.num - 80) as usize, a));
+                return r.unwrap_or_else(|| {
+                    rt.note_unimplemented(format!("expr {}/{}", rt.ace_owner_label(t.object_type), t.num), Value::Int(0))
+                });
+            }
             if t.num >= 80 {
                 let r = rt.ext_expression(oi, (t.num - 80) as usize, a);
                 return r.unwrap_or_else(|| {

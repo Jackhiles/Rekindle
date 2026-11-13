@@ -104,6 +104,19 @@ impl Fonts {
         g.fonts.fonts.iter().find(|f| f.handle == handle)
     }
 
+    /// A system font by face name (falls back to Arial, then the built-in font).
+    pub fn by_face(&mut self, face: &str, bold: bool) -> Option<Font> {
+        let path = find_font_file(face, bold, false)
+            .or_else(|| find_font_file(face, false, false))
+            .or_else(|| find_font_file("arial", bold, false))?;
+        if let Some(f) = self.by_file.get(&path) {
+            return Some(f.clone());
+        }
+        let f = load_ttf_font_from_bytes(&std::fs::read(&path).ok()?).ok()?;
+        self.by_file.insert(path, f.clone());
+        Some(f)
+    }
+
     /// (font, pixel height) for a bank font handle.
     pub fn get(&mut self, g: &GameData, handle: Option<u32>) -> (Option<Font>, f32) {
         let Some(h) = handle else { return (None, 16.0) };

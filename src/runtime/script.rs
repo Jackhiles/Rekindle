@@ -8,6 +8,7 @@
 //! hold 100 160 39      # hold VK 39 (Right) from tick 100 until 160
 //! mouse 200 320 240    # move the mouse to (320, 240) at tick 200
 //! click 210 320 240    # move there and left-click at tick 210 (`rclick` for the right button)
+//! type 250 Hello      # type text (into the focused edit box) at tick 250
 //! shot 300 menu.png    # screenshot mode only: capture at tick 300
 //! ```
 
@@ -19,6 +20,7 @@ enum Event {
     Hold(u64, u64, u16),
     Mouse(u64, f64, f64),
     Click(u64, f64, f64, usize),
+    Type(u64, String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -79,6 +81,11 @@ impl InputScript {
                 let button = if cmd == "click" { 0 } else { 2 };
                 self.events.push(Event::Click(n[0] as u64, n[1], n[2], button));
             }
+            "type" => {
+                let (t, text) = rest.split_once(char::is_whitespace).ok_or("`type` needs a tick and text")?;
+                let t = t.parse::<u64>().map_err(|_| "`type`: bad tick".to_string())?;
+                self.events.push(Event::Type(t, text.trim().to_string()));
+            }
             "shot" => {
                 let (t, name) = rest.split_once(char::is_whitespace).ok_or("`shot` needs a tick and a file name")?;
                 let t = t.parse::<u64>().map_err(|_| "`shot`: bad tick".to_string())?;
@@ -92,7 +99,7 @@ impl InputScript {
     /// The last tick anything happens at.
     pub fn last_tick(&self) -> u64 {
         let ev = self.events.iter().map(|e| match *e {
-            Event::Press(t, _) | Event::Mouse(t, ..) | Event::Click(t, ..) => t,
+            Event::Press(t, _) | Event::Mouse(t, ..) | Event::Click(t, ..) | Event::Type(t, _) => t,
             Event::Hold(_, to, _) => to,
         });
         ev.chain(self.shots.iter().map(|s| s.0)).max().unwrap_or(0)
@@ -133,6 +140,11 @@ impl InputScript {
                     }
                 }
                 Event::Mouse(..) => {}
+                Event::Type(t, ref text) => {
+                    if t == tick {
+                        input.typed.extend(text.chars());
+                    }
+                }
                 Event::Click(t, _, _, b) => {
                     if t == tick {
                         input.clicked[b] = true;

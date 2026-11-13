@@ -55,6 +55,9 @@ Extension objects (`.mfx` files) are reimplemented natively in `src/runtime/ext/
 - **Ini** (`kcini`): current file / group / item, set and get values and strings, delete items and groups. A file name without a folder lives in `%APPDATA%\MMFApplications\<name>`, as with the original object.
 - **Date & Time** (`kcclock`): reading the local date and time.
 - **Cursor** (`KcCursor`): using an Active object's image as the mouse pointer.
+- **Windows controls** (`kcedit`, `kclist`, `kcbutton`, `kccombo`): edit boxes, lists, buttons and combo boxes drawn
+  inside the game. Click an edit box and type; lists load / save line files through the save sandbox.
+- **Platform helpers** with no visible effect on PC (window control, Discord status, Android / XNA stubs) are accepted.
 - **Global Store X** (`gstorex`): the integer store, with set / add / subtract / set range / clear, compare, and save / load in its binary file format.
 
 Games write their files through a sandbox. Writes go to `%APPDATA%\fusion-rt\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified.

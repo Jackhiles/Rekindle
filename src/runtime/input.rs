@@ -21,6 +21,8 @@ pub struct Input {
     pub clicked: [bool; 3],
     pub double_clicked: [bool; 3],
     pub wheel: f32,
+    /// Text typed since the previous tick (for edit boxes).
+    pub typed: Vec<char>,
 }
 
 impl Input {
@@ -30,5 +32,6 @@ impl Input {
         self.clicked = [false; 3];
         self.double_clicked = [false; 3];
         self.wheel = 0.0;
+        self.typed.clear();
     }
 }

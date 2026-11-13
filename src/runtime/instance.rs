@@ -92,6 +92,8 @@ pub struct Instance {
     pub font_size: Option<f32>,
     /// "Follow the frame" is off: the position is in screen coordinates and ignores scrolling.
     pub fixed: bool,
+    /// Windows-control extensions (edit box, list, button, combo box).
+    pub widget: Option<Box<super::widgets::Widget>>,
 }
 
 impl Instance {
@@ -170,6 +172,7 @@ impl Instance {
             text_color: None,
             font_size: None,
             fixed: false,
+            widget: None,
         };
         match &obj.props {
             ObjectProperties::Backdrop(b) => {
@@ -525,6 +528,7 @@ pub fn bounds(g: &GameData, inst: &Instance, obj: &ObjectInfo) -> (f64, f64, f64
         }
     }
     match &inst.visual {
+        Visual::Widget(w) => (inst.x, inst.y, w.w as f64, w.h as f64),
         Visual::Image { .. } => {
             let handle = if inst.kind == ObjectKind::Active && !inst.pasted {
                 inst.current_image(obj)

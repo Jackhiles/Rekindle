@@ -14,6 +14,7 @@ pub mod instance;
 pub mod scenario;
 pub mod script;
 pub mod value;
+pub mod widgets;
 
 use crate::ctf_loader::events::Events;
 use crate::ctf_loader::{Frame, GameData, ObjectKind, ObjectProperties};
@@ -362,6 +363,56 @@ impl Runtime {
         }
     }
 
+    /// Does object `oi` create widget instances (edit box, list, button, combo)?
+    pub(crate) fn oi_has_widget(&self, oi: u16) -> bool {
+        let Some(ObjectKind::Extension(t)) = self.game.object(oi).map(|o| o.kind) else {
+            return false;
+        };
+        self.game
+            .extensions
+            .iter()
+            .find(|e| e.handle as i32 == t as i32 - 32)
+            .is_some_and(|e| widgets::WidgetKind::from_ext_name(&e.name).is_some())
+    }
+
+    /// Route clicks and typing to edit boxes, lists and buttons.
+    fn widget_input(&mut self, input: &Input) {
+        if !self.instances.iter().any(|i| i.widget.is_some()) {
+            return;
+        }
+        let click = input.clicked[0] || input.double_clicked[0];
+        if click {
+            let (mx, my) = input.mouse;
+            // Topmost visible widget under the mouse.
+            let hit = (0..self.instances.len())
+                .filter(|&i| {
+                    let inst = &self.instances[i];
+                    inst.widget.as_ref().is_some_and(|w| w.visible) && !inst.destroyed && self.mouse_over(i, mx, my)
+                })
+                .max_by_key(|&i| (self.instances[i].layer, self.instances[i].z));
+            for (i, inst) in self.instances.iter_mut().enumerate() {
+                if let Some(w) = inst.widget.as_mut() {
+                    if Some(i) != hit && w.kind == widgets::WidgetKind::Edit {
+                        w.focused = false;
+                    }
+                }
+            }
+            if let Some(i) = hit {
+                let (bx, by, _, _) = self.bounds_of(i);
+                let (lx, ly) = self.layer_mouse(i, mx, my);
+                if let Some(w) = self.instances[i].widget.as_mut() {
+                    w.click((lx - bx) as f32, (ly - by) as f32, input.double_clicked[0]);
+                }
+            }
+        }
+        let backspace = usize::from(input.pressed.contains(&8));
+        if !input.typed.is_empty() || backspace > 0 {
+            for w in self.instances.iter_mut().filter_map(|i| i.widget.as_mut()) {
+                w.type_text(&input.typed, backspace);
+            }
+        }
+    }
+
     /// Keep the state of objects marked "global" for the next frame (first instance of each).
     fn remember_globals(&mut self) {
         let mut seen = std::collections::HashSet::new();
@@ -402,6 +453,20 @@ impl Runtime {
         let max_layer = self.frame().layers.len().saturating_sub(1);
         self.next_z += 1;
         let mut inst = Instance::new(self.next_id, obj, x, y, layer.min(max_layer), self.next_z);
+        if let (ObjectKind::Extension(t), ObjectProperties::Common(c)) = (obj.kind, &obj.props) {
+            let kind = self
+                .game
+                .extensions
+                .iter()
+                .find(|e| e.handle as i32 == t as i32 - 32)
+                .and_then(|e| widgets::WidgetKind::from_ext_name(&e.name));
+            if let Some(kind) = kind {
+                let w = widgets::Widget::from_settings(kind, c.extension_data.as_deref().unwrap_or(&[]));
+                inst.visual = Visual::Placeholder { w: w.w, h: w.h };
+                inst.visible = w.visible;
+                inst.widget = Some(Box::new(w));
+            }
+        }
         self.next_id += 1;
         // The Perspective extension is drawn natively as a distortion effect.
         if let (ObjectKind::Extension(t), ObjectProperties::Common(c)) = (obj.kind, &obj.props) {
@@ -467,6 +532,7 @@ impl Runtime {
         let any_input = !input.pressed.is_empty()
             || input.clicked.iter().any(|&c| c)
             || input.double_clicked.iter().any(|&c| c);
+        self.widget_input(input);
         if self.tick == 0 {
             self.triggered_pass = events::Trigger::StartOfFrame;
             self.run_events(input, None);
@@ -478,6 +544,9 @@ impl Runtime {
         self.triggered_pass = events::Trigger::None;
         self.run_events(input, None);
         self.group_just_activated.clear();
+        for w in self.instances.iter_mut().filter_map(|i| i.widget.as_mut()) {
+            w.clear_events();
+        }
 
         self.tick += 1;
         self.prev_timer_ms = self.timer_ms;
@@ -1031,6 +1100,7 @@ impl Runtime {
             };
             let (mut x, mut y) = (inst.x as f32, inst.y as f32);
             let visual = match (&inst.visual, inst.kind) {
+                _ if inst.widget.is_some() => Visual::Widget(inst.widget.clone().expect("checked")),
                 (Visual::Image { .. }, ObjectKind::Active) if !inst.pasted => {
                     match inst.current_image(obj) {
                         Some(h) => Visual::Image { handle: h },

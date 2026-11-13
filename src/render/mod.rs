@@ -519,6 +519,9 @@ impl Viewer {
 
     /// Collect game input for the next tick (keys accumulate until a tick consumes them).
     fn gather_input(&mut self) {
+        while let Some(c) = get_char_pressed() {
+            self.input.typed.push(c);
+        }
         for k in get_keys_pressed() {
             if let Some(v) = vk_code(k) {
                 self.input.pressed.insert(v);
@@ -859,6 +862,7 @@ impl Viewer {
 
     fn item_bounds(&self, item: &SceneItem) -> Rect {
         match &item.visual {
+            Visual::Widget(w) => Rect::new(item.x, item.y, w.w, w.h),
             Visual::Image { handle } => match self.rt.game.images.get(*handle) {
                 Some(e) => {
                     let (sx, sy) = (item.scale.0.abs(), item.scale.1.abs());
@@ -1058,6 +1062,10 @@ impl Viewer {
                 };
                 draw_texture_ex(&off.snapshot.texture, p.x, p.y, WHITE, region);
                 gl_use_default_material();
+            }
+            Visual::Widget(w) => {
+                let font = self.fonts.by_face(&w.font_face, w.bold);
+                draw_widget(w, font.as_ref(), p, xf.scale);
             }
             Visual::Placeholder { .. } => {}
         }
@@ -1323,5 +1331,70 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         show_mouse((v.rt.cursor_visible && v.rt.cursor_object.is_none()) || !v.running);
         v.draw();
         next_frame().await;
+    }
+}
+
+/// Draw an edit box / list / button / combo box at screen position `p`.
+fn draw_widget(w: &crate::runtime::widgets::Widget, font: Option<&Font>, p: Vec2, scale: f32) {
+    use crate::runtime::widgets::WidgetKind;
+    let (ww, wh) = (w.w * scale, w.h * scale);
+    let px = w.font_px * scale;
+    let size = px.round().clamp(4.0, 200.0) as u16;
+    let fg = rgba(w.fg);
+    let fg = if w.enabled { fg } else { Color::new(0.5, 0.5, 0.5, 1.0) };
+    let text_at = |s: &str, x: f32, y: f32, c: Color| {
+        let params = TextParams { font, font_size: size, font_scale: 1.0, color: c, ..Default::default() };
+        draw_text_ex(s, x, y, params);
+    };
+    let inset = 3.0 * scale;
+    let ascent = px * 0.85;
+    match w.kind {
+        WidgetKind::Button => {
+            draw_rectangle(p.x, p.y, ww, wh, rgba(w.bg));
+            draw_rectangle_lines(p.x, p.y, ww, wh, 1.0, Color::new(0.4, 0.4, 0.4, 1.0));
+            let label = w.text.replace('&', "");
+            let tw = measure_text(&label, font, size, 1.0).width;
+            text_at(&label, p.x + (ww - tw) / 2.0, p.y + (wh - px) / 2.0 + ascent, fg);
+        }
+        WidgetKind::Edit => {
+            draw_rectangle(p.x, p.y, ww, wh, rgba(w.bg));
+            draw_rectangle_lines(p.x, p.y, ww, wh, 1.0, Color::new(0.45, 0.45, 0.45, 1.0));
+            let lh = px * 1.15;
+            let max_lines = ((wh - inset) / lh).floor().max(1.0) as usize;
+            let all: Vec<&str> = w.text.split(['\n']).map(|l| l.trim_end_matches('\r')).collect();
+            let first = all.len().saturating_sub(max_lines);
+            let mut caret = (p.x + inset, p.y + inset);
+            for (i, line) in all[first..].iter().enumerate() {
+                let y = p.y + inset + lh * i as f32;
+                text_at(line, p.x + inset, y + ascent, fg);
+                caret = (p.x + inset + measure_text(line, font, size, 1.0).width, y);
+            }
+            // Blinking caret in the focused box.
+            if w.focused && (get_time() * 2.0) as i64 % 2 == 0 {
+                draw_line(caret.0 + 1.0, caret.1, caret.0 + 1.0, caret.1 + px, 1.0, fg);
+            }
+        }
+        WidgetKind::List | WidgetKind::Combo => {
+            draw_rectangle(p.x, p.y, ww, wh, rgba(w.bg));
+            draw_rectangle_lines(p.x, p.y, ww, wh, 1.0, Color::new(0.45, 0.45, 0.45, 1.0));
+            let lh = w.line_height() * scale;
+            let mut y = p.y + 1.0;
+            if w.kind == WidgetKind::Combo {
+                text_at(&w.text, p.x + inset, y + ascent, fg);
+                y += lh;
+            }
+            for (k, line) in w.lines.iter().enumerate().skip(w.top) {
+                if y + lh > p.y + wh + 0.5 {
+                    break;
+                }
+                if k + 1 == w.current {
+                    draw_rectangle(p.x + 1.0, y, ww - 2.0, lh, Color::new(0.2, 0.4, 0.8, 1.0));
+                    text_at(line, p.x + inset, y + ascent, WHITE);
+                } else {
+                    text_at(line, p.x + inset, y + ascent, fg);
+                }
+                y += lh;
+            }
+        }
     }
 }
