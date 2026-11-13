@@ -1,5 +1,11 @@
 /target
 
+# The built program copied to the root by build.cmd / build.sh (and updater leftovers).
+/Rekindle
+/Rekindle.new
+*.old.exe
+*.download
+
 # Never commit game data or proprietary runtime files. This repository is asset-free.
 /Tools/
 *.exe

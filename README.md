@@ -64,6 +64,11 @@ Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<gam
 
 Anything not implemented yet is counted rather than crashing: see the HUD or `--headless`. Extension objects (`ext:...`) are the most common gap.
 
+### Getting started
+Run `build.cmd` (Windows) or `./build.sh` (Linux / Steam Deck). It builds Rekindle and puts **`Rekindle.exe`**
+(or `Rekindle`) in this folder: double-click it to open the launcher. Re-running the script while Rekindle is open is
+fine. (`cargo build --release` alone leaves the program in `target/release/`.)
+
 ### Launcher
 Run `rekindle` without a game to open the launcher. "Add game..." picks a game file and "Add folder..." finds every Fusion
 game in a folder (also from the command line: `rekindle --add FILE_OR_FOLDER`). Each game has **Play**, **Desktop
