@@ -319,8 +319,19 @@ impl ChunkDecoder {
     }
 
     pub fn decode(&self, chunk: &RawChunk) -> Result<Blob> {
-        self.decode_parts(chunk.id, chunk.flags, &chunk.body)
-            .with_context(|| {
+        let r = self.decode_parts(chunk.id, chunk.flags, &chunk.body);
+        // Debug: FUSION_RT_DUMP_CHUNKS=<dir> writes every decoded chunk as <id>_<n>.bin.
+        if let (Some(dir), Ok(b)) = (std::env::var_os("FUSION_RT_DUMP_CHUNKS"), &r) {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let n = N.fetch_add(1, Ordering::Relaxed);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(
+                std::path::Path::new(&dir).join(format!("{:04x}_{n:05}_f{}.bin", chunk.id, chunk.flags)),
+                &b[..],
+            );
+        }
+        r.with_context(|| {
                 format!(
                     "decoding chunk {:#06x} ({})",
                     chunk.id,
