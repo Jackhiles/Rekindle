@@ -2,6 +2,7 @@
 //! files with Play, desktop-shortcut and remove buttons. Games run in their own process.
 
 pub mod library;
+pub mod steam;
 pub mod update;
 
 /// File / folder pickers.
@@ -114,11 +115,51 @@ pub fn window_conf() -> Conf {
     }
 }
 
+/// Launcher-wide options in `<data dir>\Rekindle\launcher.ini`.
+#[derive(Debug, Clone)]
+struct LauncherConfig {
+    /// Copy Steam games into `storage` instead of linking them where Steam installed them.
+    steam_copy: bool,
+    storage: PathBuf,
+}
+
+impl LauncherConfig {
+    fn file() -> PathBuf {
+        library::data_dir().join("launcher.ini")
+    }
+
+    fn load() -> Self {
+        let mut c = Self { steam_copy: false, storage: library::data_dir().join("games") };
+        if let Ok(text) = std::fs::read_to_string(Self::file()) {
+            for line in text.lines() {
+                match line.split_once('=') {
+                    Some(("steam_mode", v)) => c.steam_copy = v.trim() == "copy",
+                    Some(("storage", v)) if !v.trim().is_empty() => c.storage = PathBuf::from(v.trim()),
+                    _ => {}
+                }
+            }
+        }
+        c
+    }
+
+    fn save(&self) {
+        let text = format!(
+            "[launcher]\nsteam_mode={}\nstorage={}\n",
+            if self.steam_copy { "copy" } else { "link" },
+            self.storage.display()
+        );
+        let _ = std::fs::create_dir_all(library::data_dir());
+        let _ = std::fs::write(Self::file(), text);
+    }
+}
+
 enum Msg {
     Found(Entry),
     Status(String),
     Done(String),
     UpdateAvailable(update::Release),
+    /// A line for the Steam panel's results.
+    SteamLine(String),
     UpdateInstalled(Result<PathBuf, String>),
 }
 
@@ -144,6 +185,10 @@ struct Launcher {
     show_log: bool,
     /// Settings panel open for a game: (library index, its settings).
     settings_panel: Option<(usize, Settings)>,
+    /// The Steam games panel is open.
+    steam_panel: bool,
+    steam_lines: Vec<String>,
+    config: LauncherConfig,
     /// A newer release, once the background check found one.
     update: Option<update::Release>,
     updating: bool,
@@ -177,6 +222,9 @@ impl Launcher {
             next_log_check: 0.0,
             show_log: false,
             settings_panel: None,
+            steam_panel: false,
+            steam_lines: Vec::new(),
+            config: LauncherConfig::load(),
             update: None,
             updating: false,
             pad: gilrs::Gilrs::new().ok(),
@@ -217,7 +265,7 @@ impl Launcher {
         );
         self.pad_held = now;
         self.pad_back = b;
-        if self.entries.is_empty() || self.settings_panel.is_some() || self.show_log {
+        if self.entries.is_empty() || self.settings_panel.is_some() || self.show_log || self.steam_panel {
             if b && self.show_log {
                 self.show_log = false;
             }
@@ -459,6 +507,7 @@ impl Launcher {
                     self.say(s);
                 }
                 Msg::UpdateAvailable(r) => self.update = Some(r),
+                Msg::SteamLine(l) => self.steam_lines.push(l),
                 Msg::UpdateInstalled(Ok(exe)) => {
                     // Start the new version and close this one.
                     match std::process::Command::new(&exe).spawn() {
@@ -492,13 +541,19 @@ impl Launcher {
         let tw = self.bold_width("Rekindle", 32) + 46.0;
         let subtitle = format!("Fusion game launcher  v{}", update::current_version());
         // Only when it fits left of the header buttons (4 buttons + gaps = 586 px).
-        if 24.0 + tw + 14.0 + self.text_width(&subtitle, 17) < sw - 24.0 - 586.0 - 12.0 {
+        if 24.0 + tw + 14.0 + self.text_width(&subtitle, 17) < sw - 24.0 - 738.0 - 12.0 {
             self.text(&subtitle, 24.0 + tw + 14.0, 46.0, 17, MUTED);
         }
         let add_folder = Rect::new(sw - 24.0 - 150.0, 20.0, 150.0, 36.0);
         let add_game = Rect::new(add_folder.x - 12.0 - 140.0, 20.0, 140.0, 36.0);
         let log_btn = Rect::new(add_game.x - 12.0 - 120.0, 20.0, 120.0, 36.0);
         let folder_btn = Rect::new(log_btn.x - 12.0 - 130.0, 20.0, 130.0, 36.0);
+        let steam_btn = Rect::new(folder_btn.x - 12.0 - 140.0, 20.0, 140.0, 36.0);
+        if self.button(steam_btn, "Steam games", false, true) {
+            self.steam_panel = !self.steam_panel;
+            self.settings_panel = None;
+            self.show_log = false;
+        }
         if self.button(log_btn, if self.show_log { "Library" } else { "Play log" }, false, true) {
             self.show_log = !self.show_log;
             self.scroll = 0.0;
@@ -522,6 +577,12 @@ impl Launcher {
         // Game list (or the play log).
         let top = HEADER_H;
         let bottom = sh - STATUS_H;
+        if self.steam_panel {
+            self.draw_steam_panel(top);
+            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
+            self.draw_status(sh);
+            return;
+        }
         if self.settings_panel.is_some() {
             self.draw_settings_panel(top, bottom);
             draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
@@ -733,6 +794,99 @@ impl Launcher {
         let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
         let close = self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape) || self.pad_back;
         self.settings_panel = if close { None } else { Some((i, s)) };
+    }
+
+    /// Find Fusion games in Steam and add them (linked in place, or copied to storage).
+    fn scan_steam(&mut self) {
+        self.steam_lines.clear();
+        self.busy = Some("Looking for Clickteam games in Steam...".into());
+        let tx = self.tx.clone();
+        let copy = self.config.steam_copy;
+        let storage = self.config.storage.clone();
+        let known: Vec<String> = self.entries.iter().map(|e| e.path.to_string_lossy().to_lowercase()).collect();
+        std::thread::spawn(move || {
+            if steam::steam_roots().is_empty() {
+                let _ = tx.send(Msg::Done("Steam isn't installed (or its folder wasn't found).".into()));
+                return;
+            }
+            let games = steam::find_fusion_games(|name| {
+                let _ = tx.send(Msg::Status(format!("Checking {name}...")));
+            });
+            let (mut added, mut skipped) = (0, 0);
+            for g in &games {
+                let folder = if copy {
+                    let _ = tx.send(Msg::Status(format!("Copying {}...", g.name)));
+                    match steam::copy_into(g, &storage) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            let _ = tx.send(Msg::SteamLine(format!("{}: copy failed ({e})", g.name)));
+                            continue;
+                        }
+                    }
+                } else {
+                    g.folder.clone()
+                };
+                for f in &g.files {
+                    let path = folder.join(f.strip_prefix(&g.folder).unwrap_or(f));
+                    if known.contains(&path.to_string_lossy().to_lowercase()) {
+                        skipped += 1;
+                        let _ = tx.send(Msg::SteamLine(format!("{}: already in the library", g.name)));
+                        continue;
+                    }
+                    if let Some(e) = library::inspect(&path) {
+                        added += 1;
+                        let how = if copy { "copied and added" } else { "added" };
+                        let _ = tx.send(Msg::SteamLine(format!("{} ({}): {how}", e.title, g.name)));
+                        let _ = tx.send(Msg::Found(e));
+                    }
+                }
+            }
+            let _ = tx.send(Msg::Done(match (games.len(), added) {
+                (0, _) => "No Clickteam games found in your Steam libraries.".into(),
+                (_, 0) => format!("Found {} Clickteam game(s); all were already in the library ({skipped}).", games.len()),
+                (_, n) => format!("Added {n} game(s) from Steam."),
+            }));
+        });
+    }
+
+    fn draw_steam_panel(&mut self, top: f32) {
+        let sw = screen_width();
+        draw_rectangle(16.0, top + 4.0, sw - 32.0, screen_height() - top - STATUS_H - 8.0, CARD);
+        self.bold_text("Steam games", 36.0, top + 40.0, 24, TEXT);
+        self.text("Finds Clickteam Fusion games installed through Steam and adds them to the library.", 36.0, top + 64.0, 14, MUTED);
+        let idle = self.busy.is_none();
+        let mut y = top + 80.0;
+        if let Some(k) = self.choice_row(y, "Add games by", "Linking uses Steam's copy; copying keeps your own", &["Linking in place", "Copying to storage"], self.config.steam_copy as usize) {
+            self.config.steam_copy = k == 1;
+            self.config.save();
+        }
+        y += ROW_STEP;
+        self.text("Storage folder", 48.0, y + 23.0, 19, TEXT);
+        self.text("Where copied games go", 48.0, y + 46.0, 14, MUTED);
+        let shown = self.fit(&self.config.storage.display().to_string(), 15, sw - 400.0 - 160.0);
+        self.text(&shown, 400.0, y + 28.0, 15, if self.config.steam_copy { TEXT } else { MUTED });
+        if self.button(Rect::new(sw - 36.0 - 120.0, y + 6.0, 120.0, 32.0), "Choose...", false, idle) {
+            if let Some(dir) = dialogs::pick_folder() {
+                self.config.storage = dir;
+                self.config.save();
+            }
+        }
+        y += ROW_STEP + 8.0;
+        if self.button(Rect::new(48.0, y, 300.0, 38.0), "Find Clickteam games in Steam", true, idle) {
+            self.scan_steam();
+        }
+        y += 56.0;
+        for (k, line) in self.steam_lines.iter().enumerate() {
+            let ly = y + k as f32 * 22.0;
+            if ly > screen_height() - STATUS_H - 20.0 {
+                break;
+            }
+            self.text(line, 48.0, ly, 16, TEXT);
+        }
+        let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
+        if self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape) || self.pad_back {
+            self.steam_panel = false;
+        }
     }
 
     fn draw_status(&mut self, sh: f32) {

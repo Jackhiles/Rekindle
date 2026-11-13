@@ -75,6 +75,11 @@ game in a folder (also from the command line: `rekindle --add FILE_OR_FOLDER`). 
 shortcut** (a shortcut that starts the game with Rekindle, using the game's own icon; also `rekindle GAME --shortcut`)
 and **X** (removes it from the library; the files are untouched). Double-click a game to play it.
 
+**Steam games** finds Clickteam Fusion games installed through Steam (all Steam libraries; on Linux also Flatpak
+Steam) and adds them, either linked where Steam installed them or copied into a storage folder you choose (so they
+keep working after uninstalling from Steam). Copies from Steam are marked "(Steam)" in the library. From the command
+line, `rekindle --find-steam` lists them.
+
 Play time is logged per session in `%APPDATA%\Rekindle\playtime.tsv`; the launcher shows each game's total and last
 play, and **Play log** lists every session. **Open folder** opens the Rekindle folder with saves, the play log and each
 game's `rekindle.log`. A game's own "end application" action closes its window.

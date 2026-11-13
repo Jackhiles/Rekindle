@@ -107,6 +107,30 @@ fn parse_pack(data: &[u8], off: usize, unicode: bool) -> Result<(Vec<PackFile>, 
     Ok((files, r.pos()))
 }
 
+/// Quick check: does this file look like a Fusion game? Only looks where the data would
+/// start (right after the executable's code, or the first megabyte of a data file), so
+/// large files of other engines are rejected fast.
+pub fn looks_like_fusion(data: &[u8]) -> bool {
+    const WINDOW: usize = 1 << 20;
+    let near = |from: usize| {
+        let end = (from + WINDOW).min(data.len());
+        from < end && find_game_header(&data[..end], from).is_some()
+    };
+    if !data.starts_with(b"MZ") {
+        return near(0);
+    }
+    let Ok(overlay) = pe_overlay_offset(data) else { return false };
+    if near(overlay) {
+        return true;
+    }
+    // A "wwww" pack of runtime files can come first.
+    data.get(overlay..overlay + 4) == Some(b"wwww")
+        && [false, true]
+            .into_iter()
+            .find_map(|unicode| parse_pack(data, overlay, unicode).ok())
+            .is_some_and(|(_, end)| near(end))
+}
+
 pub fn locate_game_data(data: &[u8]) -> Result<Container> {
     if is_game_header(data, 0) {
         return Ok(Container {

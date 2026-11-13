@@ -23,6 +23,10 @@ struct Cli {
     /// Without one, the game library (launcher) opens.
     game: Option<PathBuf>,
 
+    /// List the Clickteam Fusion games installed through Steam (read-only).
+    #[arg(long)]
+    find_steam: bool,
+
     /// Write Rekindle's icon as a PNG (used when packaging, e.g. the AppImage).
     #[arg(long, value_name = "FILE", hide = true)]
     write_icon: Option<PathBuf>,
@@ -126,6 +130,26 @@ fn main() -> Result<()> {
     rekindle::log::install_panic_hook();
     if let Some(target) = &cli.scenario {
         return run_scenarios(target);
+    }
+    if cli.find_steam {
+        use rekindle::launcher::steam;
+        let roots = steam::steam_roots();
+        if roots.is_empty() {
+            println!("No Steam installation found.");
+        }
+        for r in &roots {
+            println!("Steam: {}", r.display());
+            for lib in steam::libraries(r) {
+                println!("  library: {} ({} games)", lib.display(), steam::installed(&lib).len());
+            }
+        }
+        let t = Instant::now();
+        let games = steam::find_fusion_games(|_| {});
+        for g in &games {
+            println!("{} (app {}): {}", g.name, g.app_id, g.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join(", "));
+        }
+        println!("{} Clickteam game(s) found in {:.1?}", games.len(), t.elapsed());
+        return Ok(());
     }
     if let Some(out) = &cli.write_icon {
         std::fs::write(out, rekindle::launcher::ICON_PNG)?;

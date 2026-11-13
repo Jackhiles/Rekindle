@@ -45,13 +45,24 @@ pub fn add(entries: &mut Vec<Entry>, mut e: Entry) -> bool {
     if entries.iter().any(|x| x.path.to_string_lossy().to_lowercase() == key) {
         return false;
     }
-    if entries.iter().any(|x| x.title.eq_ignore_ascii_case(&e.title)) {
-        let stem = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        e.title = format!("{} ({stem})", e.title);
-    }
+    e.title = unique_title(entries, &e);
     entries.push(e);
     entries.sort_by_key(|e| e.title.to_lowercase());
     true
+}
+
+/// A title not used by another entry: copies from Steam say "(Steam)"; otherwise the
+/// file name tells same-titled games apart.
+fn unique_title(entries: &[Entry], e: &Entry) -> String {
+    let taken = |t: &str| entries.iter().any(|x| x.title.eq_ignore_ascii_case(t));
+    let steam = e.path.components().any(|c| c.as_os_str().eq_ignore_ascii_case("steamapps"));
+    let stem = e.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let tag = if steam { " (Steam)" } else { "" };
+    let candidates = [e.title.clone(), format!("{}{tag}", e.title), format!("{} ({stem}){tag}", e.title)];
+    if let Some(t) = candidates.into_iter().find(|t| !taken(t)) {
+        return t;
+    }
+    (2..).map(|n| format!("{} ({stem}){tag} ({n})", e.title)).find(|t| !taken(t)).expect("unbounded")
 }
 
 pub fn save(entries: &[Entry]) {
