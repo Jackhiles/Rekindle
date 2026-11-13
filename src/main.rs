@@ -83,6 +83,14 @@ struct Cli {
     #[arg(long, value_name = "N")]
     headless: Option<u64>,
 
+    /// Start in fullscreen (Alt+Enter or F11 toggles while playing).
+    #[arg(long, conflicts_with = "windowed")]
+    fullscreen: bool,
+
+    /// Start in a window even if the game or your last choice was fullscreen.
+    #[arg(long)]
+    windowed: bool,
+
     /// With --screenshot DIR: drive the game with an input script (press / hold / mouse / click)
     /// and save a PNG into DIR at every `shot TICK name.png` line.
     #[arg(long, value_name = "FILE")]
@@ -103,6 +111,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    fusion_rt::log::install_panic_hook();
     if let Some(target) = &cli.scenario {
         return run_scenarios(target);
     }
@@ -156,6 +165,13 @@ fn main() -> Result<()> {
         screenshot_ticks: cli.ticks,
         mute: cli.mute,
         save_dir: cli.save_dir,
+        fullscreen: if cli.fullscreen {
+            Some(true)
+        } else if cli.windowed {
+            Some(false)
+        } else {
+            None
+        },
         script: match &cli.script {
             Some(p) => Some(
                 runtime::script::InputScript::parse(&std::fs::read_to_string(p)?)

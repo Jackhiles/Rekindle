@@ -28,7 +28,25 @@ pub struct AppHeader {
     pub windows_menu_index: u8,
 }
 
+/// `AppHeader::flags` bits.
+pub mod app_flags {
+    pub const STRETCH: u16 = 0x0010;
+    pub const MAXIMIZE: u16 = 0x0200;
+    pub const FULLSCREEN_AT_START: u16 = 0x0800;
+    pub const FULLSCREEN_SWITCH: u16 = 0x1000;
+}
+
 impl AppHeader {
+    /// The game asks to start in fullscreen.
+    pub fn fullscreen_at_start(&self) -> bool {
+        self.flags & app_flags::FULLSCREEN_AT_START != 0
+    }
+
+    /// "Resize display to fill window": stretch the game to the window instead of centring it.
+    pub fn stretch(&self) -> bool {
+        self.flags & app_flags::STRETCH != 0
+    }
+
     /// Multimedia Fusion 1.5 layout: no size prefix, score/lives stored as-is,
     /// six keys per player and no frame rate (the runtime ran at 50 fps).
     pub fn parse_old(data: &[u8]) -> Result<Self> {

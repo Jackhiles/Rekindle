@@ -61,6 +61,15 @@ Games write their files through a sandbox. Writes go to `%APPDATA%\fusion-rt\<ga
 
 Anything not implemented yet is counted rather than crashing: see the HUD or `--headless`. Extension objects (`ext:...`) are the most common gap.
 
+### Display and errors
+- **Fullscreen**: games that ask for fullscreen at start get it; `--fullscreen` / `--windowed` override that, and
+  Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `fusion-rt.ini` in the save folder.
+- **Scaling**: the game keeps its aspect ratio (black bars fill the rest). When the picture is scaled, the finished
+  frame is upscaled smoothly; F9 switches to sharp pixels (also remembered).
+- **Errors**: if something inside the game logic fails, the tick is skipped, a red notice appears and the details go to
+  `fusion-rt.log` in the save folder; the game pauses after repeated failures. Unsupported features hit during play are
+  logged there too, which makes the file useful for bug reports.
+
 ### Viewer
 Many games cover a frame with a fade or transition object that events remove. When paused (or with `--static`), you can toggle layers to see underneath.
 
@@ -71,6 +80,8 @@ Many games cover a frame with a fade or transition object that events remove. Wh
 | F3 | single tick while paused |
 | F5 | restart frame |
 | F6 / F7 / F8 | bounding boxes / show hidden objects / fit whole frame |
+| F9 | smooth / sharp scaling |
+| F11 or Alt+Enter | fullscreen / window |
 | Ctrl+PgUp / Ctrl+PgDn | previous / next frame |
 | Ctrl+1 ... Ctrl+0 | toggle layers 1-10 |
 | Ctrl+Q | quit (all other keys go to the game) |
@@ -82,6 +93,7 @@ Game files never go in this repository, so test scripts live next to your games.
 ```text
 game ../games/My Game.exe
 press 50 13            # Enter at tick 50
+click 400 320 240      # left-click at window position (320, 240) at tick 400 (also `mouse`, `rclick`, `hold`)
 run 900
 expect_frame title     # by name or index; also expect_visited, expect_save, expect_no_unimplemented
 sweep 200              # run every frame for 200 ticks
@@ -103,6 +115,8 @@ fusion-rt <GAME> --headless N [--press TICK:VK]...   simulate N ticks without a 
 fusion-rt <GAME> --sweep N               run every frame N ticks and list unsupported features
 fusion-rt <GAME> --dump-events N         print frame N's event sheet
 fusion-rt --scenario FILE_OR_DIR         run regression scenarios
+fusion-rt <GAME> --screenshot DIR --script FILE   play a scripted input file, saving a PNG at each `shot TICK name.png`
+fusion-rt <GAME> --fullscreen / --windowed       start fullscreen or in a window
 fusion-rt <GAME> --dump-info [-v]
 fusion-rt <GAME> --extract DIR
 ```

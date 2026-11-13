@@ -3,6 +3,7 @@
 
 pub mod audio_out;
 pub mod scene;
+pub mod settings;
 pub mod text;
 
 use crate::ctf_loader::properties::{Fill, ShapeKind};
@@ -38,6 +39,8 @@ pub struct ViewerOptions {
     pub mute: bool,
     /// Where game save files go (None = default per-game folder).
     pub save_dir: Option<std::path::PathBuf>,
+    /// Force fullscreen (true) or windowed (false); None = saved choice, else the game's setting.
+    pub fullscreen: Option<bool>,
 }
 
 /// Window configuration derived from the application header. Very large games are
@@ -205,9 +208,12 @@ impl Offscreen {
         )
         .map_err(|e| eprintln!("blit shader unavailable: {e:?}"))
         .ok();
+        let main = make();
+        // The finished frame is scaled to the window; filtering keeps that smooth.
+        main.texture.set_filter(FilterMode::Linear);
         Self {
             size: (w, h),
-            main: make(),
+            main,
             snapshot: make(),
             material,
             blit,
@@ -400,7 +406,19 @@ struct Viewer {
     /// Per-layer visibility override for the current frame (debug toggles).
     layer_off: Vec<bool>,
     drag_from: Option<(Vec2, Vec2)>,
+    settings: settings::Settings,
+    fullscreen: bool,
+    log: crate::log::Log,
+    /// Unsupported features already written to the log.
+    logged_unimplemented: usize,
+    /// An error message shown on screen until the given time.
+    notice: Option<(String, f64)>,
+    /// Consecutive ticks that failed; the game pauses if this keeps growing.
+    failed_ticks: u32,
 }
+
+/// Consecutive failing ticks before the game is paused.
+const MAX_FAILED_TICKS: u32 = 30;
 
 /// Windows virtual-key code for a Macroquad key (what Fusion events compare against).
 fn vk_code(k: KeyCode) -> Option<u16> {
@@ -531,13 +549,22 @@ impl Viewer {
         if is_key_pressed(KeyCode::F1) {
             self.hud = !self.hud;
         }
+        let alt = is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt);
+        if is_key_pressed(KeyCode::F11) || (alt && is_key_pressed(KeyCode::Enter)) {
+            self.set_fullscreen(!self.fullscreen);
+            self.settings.fullscreen = Some(self.fullscreen);
+            self.settings.save();
+        }
+        if is_key_pressed(KeyCode::F9) {
+            self.settings.smooth = !self.settings.smooth;
+            self.settings.save();
+        }
         if is_key_pressed(KeyCode::F2) {
             self.running = !self.running;
             self.scroll = vec2(self.rt.scroll.0 as f32, self.rt.scroll.1 as f32);
         }
         if is_key_pressed(KeyCode::F3) && !self.running {
-            self.rt.tick(&self.input);
-            self.input.consume_edges();
+            self.step();
         }
         if is_key_pressed(KeyCode::F5) {
             self.load_frame(self.rt.frame_index);
@@ -617,14 +644,75 @@ impl Viewer {
         }
         let dt = 1.0 / self.rt.frame_rate as f64;
         self.tick_acc = (self.tick_acc + get_frame_time() as f64).min(dt * 4.0);
-        while self.tick_acc >= dt {
+        while self.tick_acc >= dt && self.running {
             self.tick_acc -= dt;
-            self.rt.tick(&self.input);
-            self.input.consume_edges();
-            if self.rt.frame_log.len() != self.shown_frame {
-                self.on_frame_changed();
-            }
+            self.step();
         }
+        self.log_unimplemented();
+    }
+
+    /// One game tick with the gathered input. A failure inside the game logic is logged
+    /// and reported on screen instead of closing the program.
+    fn step(&mut self) {
+        let input = std::mem::take(&mut self.input);
+        let rt = &mut self.rt;
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.tick(&input))).is_ok();
+        self.input = input;
+        self.input.consume_edges();
+        if ok {
+            self.failed_ticks = 0;
+        } else {
+            self.failed_ticks += 1;
+            let msg = crate::log::take_panic().unwrap_or_else(|| "unknown error".into());
+            let line = format!(
+                "error in frame {} \"{}\" at tick {}: {msg}",
+                self.rt.frame_index,
+                self.rt.frame().name,
+                self.rt.tick
+            );
+            self.log.line(&line);
+            let mut text = format!("Game logic error (logged to {})", self.log.path.display());
+            if self.failed_ticks >= MAX_FAILED_TICKS {
+                self.running = false;
+                text += " - paused after repeated errors (F2 resumes)";
+                self.log.line("paused after repeated errors");
+            }
+            self.notice = Some((text, get_time() + 6.0));
+        }
+        if self.rt.frame_log.len() != self.shown_frame {
+            self.on_frame_changed();
+        }
+    }
+
+    /// Write newly hit unsupported features to the log file.
+    fn log_unimplemented(&mut self) {
+        let un = self.rt.unimplemented.borrow();
+        if un.len() == self.logged_unimplemented {
+            return;
+        }
+        let names: Vec<String> = un.keys().cloned().collect();
+        drop(un);
+        let line = format!(
+            "frame {}: {} unsupported feature(s) so far: {}",
+            self.rt.frame_index,
+            names.len(),
+            names.join("; ")
+        );
+        self.log.line(&line);
+        self.logged_unimplemented = names.len();
+    }
+
+    fn set_fullscreen(&mut self, on: bool) {
+        if on == self.fullscreen {
+            return;
+        }
+        set_fullscreen(on);
+        if !on {
+            // Back to the normal window size.
+            let conf = window_conf(&self.rt.game);
+            request_new_screen_size(conf.window_width as f32, conf.window_height as f32);
+        }
+        self.fullscreen = on;
     }
 
     fn draw(&mut self) {
@@ -635,10 +723,11 @@ impl Viewer {
         let scene = self.rt.draw_items();
         // Distortion effects need what's behind them as a texture: draw the game view
         // into an off-screen target at native resolution, then scale it to the window.
-        let use_offscreen = !self.fit
-            && scene.iter().any(|i| {
-                matches!(i.visual, Visual::Effect { .. }) && (i.visible || self.show_hidden)
-            });
+        let has_effect = scene
+            .iter()
+            .any(|i| matches!(i.visual, Visual::Effect { .. }) && (i.visible || self.show_hidden));
+        let scaled = (screen_scale - 1.0).abs() > 0.01;
+        let use_offscreen = !self.fit && (has_effect || (self.settings.smooth && scaled));
         if use_offscreen {
             let want = (view.x.max(1.0) as u32, view.y.max(1.0) as u32);
             if self.offscreen.as_ref().is_none_or(|o| o.size != want) {
@@ -748,6 +837,14 @@ impl Viewer {
             }
         }
 
+        if self.notice.as_ref().is_some_and(|n| get_time() >= n.1) {
+            self.notice = None;
+        }
+        if let Some((msg, _)) = &self.notice {
+            let w = measure_text(msg, None, 20, 1.0).width;
+            draw_rectangle(8.0, screen_height() - 36.0, w + 16.0, 28.0, Color::new(0.5, 0.0, 0.0, 0.85));
+            draw_text(msg, 16.0, screen_height() - 16.0, 20.0, WHITE);
+        }
         if self.hud {
             self.draw_hud();
         }
@@ -1044,7 +1141,7 @@ impl Viewer {
                 top.len(),
                 top.iter().take(6).map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", ")
             ),
-            "F1 HUD  F2 pause  F3 step  F5 restart frame  F6 boxes  F7 hidden  F8 fit  Ctrl+PgUp/PgDn frame  Ctrl+1-0 layer  Ctrl+Q quit".into(),
+            "F1 HUD  F2 pause  F3 step  F5 restart frame  F6 boxes  F7 hidden  F8 fit  F9 smooth  F11/Alt+Enter fullscreen  Ctrl+PgUp/PgDn frame  Ctrl+1-0 layer  Ctrl+Q quit".into(),
         ];
         let h = 18.0 * lines.len() as f32 + 8.0;
         draw_rectangle(0.0, 0.0, screen_width(), h, Color::new(0.0, 0.0, 0.0, 0.65));
@@ -1114,6 +1211,7 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         return;
     }
     let rt = Runtime::with_save_root(game, opts.start_frame, opts.save_dir.clone());
+    let save_root = rt.files.save_root.clone();
     let mut v = Viewer {
         shown_frame: rt.frame_log.len(),
         rt,
@@ -1132,8 +1230,21 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         input: Input::default(),
         layer_off: Vec::new(),
         drag_from: None,
+        settings: settings::Settings::load(&save_root),
+        fullscreen: false,
+        log: crate::log::Log::open(&save_root),
+        logged_unimplemented: 0,
+        notice: None,
+        failed_ticks: 0,
     };
     v.on_frame_changed();
+    if opts.screenshot.is_none() {
+        let g = &v.rt.game;
+        let line = format!("started \"{}\" (runtime {:#x}, build {})", g.name, g.runtime_version, g.product_build);
+        v.log.line(&line);
+        let want = opts.fullscreen.or(v.settings.fullscreen).unwrap_or(g.header.fullscreen_at_start());
+        v.set_fullscreen(want);
+    }
     for &l in &opts.hidden_layers {
         if let Some(off) = v.layer_off.get_mut(l) {
             *off = true;

@@ -58,6 +58,14 @@ pub fn print_info(g: &GameData, verbose: bool) {
         h.border_color[2]
     );
     println!(
+        "  Flags         {:#06x} / new {:#06x} / other {:#06x}{}{}",
+        h.flags,
+        h.new_flags,
+        h.other_flags,
+        if h.fullscreen_at_start() { ", fullscreen at start" } else { "" },
+        if h.stretch() { ", stretch to window" } else { "" }
+    );
+    println!(
         "  Start         score {}, lives {}",
         h.initial_score, h.initial_lives
     );
