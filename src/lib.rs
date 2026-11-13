@@ -7,6 +7,8 @@ pub mod audio;
 pub mod ctf_loader;
 /// The game library / launcher shown when no game is given.
 pub mod launcher;
+/// Replacement packs (mods) for images and sounds.
+pub mod mods;
 /// Log file next to the saves, and panic capture.
 pub mod log;
 /// Macroquad-based frame viewer.

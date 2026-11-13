@@ -151,6 +151,9 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                                 d.tick, obj.name, obj.flags, inst.layer, inst.fixed, inst.x, inst.y, inst.visible, inst.ink_effect, inst.tint[3],
                                 inst.anim.anim, inst.anim.frame, inst.values.iter().take(6).map(|v| v.to_string()).collect::<Vec<_>>(), inst.counter, d.last_mouse, d.rt.scroll
                             ));
+                            if let Some(h) = inst.current_image(obj) {
+                                result.log.push(format!("    image {h}"));
+                            }
                             if let Some(w) = &inst.widget {
                                 result.log.push(format!(
                                     "    widget {:?} {}x{} text {:?} lines {} current {} visible {} focused {} font {} {}px",

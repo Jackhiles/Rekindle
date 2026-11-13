@@ -350,6 +350,8 @@ impl InkMaterials {
 struct Textures {
     map: HashMap<u32, Option<Texture2D>>,
     bytes: usize,
+    /// Replacement images from mods.
+    mods: std::sync::Arc<crate::mods::Mods>,
 }
 
 /// Decoded-texture budget before the cache is emptied on a frame change.
@@ -360,13 +362,21 @@ impl Textures {
         if let Some(t) = self.map.get(&handle) {
             return t.clone();
         }
-        let tex = g.images.get(handle).and_then(|e| e.decode_rgba().ok()).and_then(|img| {
+        let original = g.images.get(handle);
+        let replaced = self.mods.image(handle);
+        let resized = match (&replaced, original) {
+            (Some(r), Some(o)) => r.width != o.width as u32 || r.height != o.height as u32,
+            _ => false,
+        };
+        let img = replaced.or_else(|| original.and_then(|e| e.decode_rgba().ok()));
+        let tex = img.and_then(|img| {
             if img.width == 0 || img.height == 0 {
                 return None;
             }
             self.bytes += img.pixels.len();
             let t = Texture2D::from_rgba8(img.width as u16, img.height as u16, &img.pixels);
-            t.set_filter(FilterMode::Nearest);
+            // A replacement at another resolution is scaled to the original's size.
+            t.set_filter(if resized { FilterMode::Linear } else { FilterMode::Nearest });
             Some(t)
         });
         self.map.insert(handle, tex.clone());
@@ -843,7 +853,10 @@ impl Viewer {
                 if let (Some(tex), Some(e)) = (self.textures.get(&self.rt.game, h), self.rt.game.images.get(h)) {
                     let m = Vec2::from(mouse_position());
                     let hot = vec2(e.hotspot.0 as f32, e.hotspot.1 as f32) * scale;
-                    let params = DrawTextureParams { dest_size: Some(tex.size() * scale), ..Default::default() };
+                    let params = DrawTextureParams {
+                        dest_size: Some(vec2(e.width as f32, e.height as f32) * scale),
+                        ..Default::default()
+                    };
                     draw_texture_ex(&tex, m.x - hot.x, m.y - hot.y, WHITE, params);
                 }
             }
@@ -1016,7 +1029,13 @@ impl Viewer {
                     let Some(tex) = self.textures.get(&self.rt.game, *h) else {
                         continue;
                     };
-                    let s = tex.size() * xf.scale;
+                    let s = self
+                        .rt
+                        .game
+                        .images
+                        .get(*h)
+                        .map_or(tex.size(), |e| vec2(e.width as f32, e.height as f32))
+                        * xf.scale;
                     right -= s.x;
                     let params = DrawTextureParams {
                         dest_size: Some(s),
@@ -1077,7 +1096,15 @@ impl Viewer {
         let Some(tex) = self.textures.get(&self.rt.game, handle) else {
             return;
         };
-        let tile = tex.size() * scale;
+        // Game-pixel size of the tile (a replacement image may have more pixels).
+        let orig = self
+            .rt
+            .game
+            .images
+            .get(handle)
+            .map_or(tex.size(), |e| vec2(e.width as f32, e.height as f32));
+        let k = tex.size() / orig.max(Vec2::ONE);
+        let tile = orig * scale;
         if tile.x < 0.5 || tile.y < 0.5 {
             return;
         }
@@ -1087,7 +1114,7 @@ impl Viewer {
             let mut x = 0.0;
             while x < size.x {
                 let tw = tile.x.min(size.x - x);
-                let src = Rect::new(0.0, 0.0, tw / scale, th / scale);
+                let src = Rect::new(0.0, 0.0, tw / scale * k.x, th / scale * k.y);
                 let params = DrawTextureParams {
                     dest_size: Some(vec2(tw, th)),
                     source: Some(src),
@@ -1254,6 +1281,19 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         notice: None,
         failed_ticks: 0,
     };
+    // Replacement packs for this game.
+    let mods = std::sync::Arc::new(crate::mods::Mods::load(opts.game_path.as_deref().unwrap_or(&v.rt.game.path)));
+    if !mods.is_empty() {
+        v.log.line(&format!(
+            "mods: {} images, {} sounds from {}",
+            mods.images.len(),
+            mods.sounds.len(),
+            mods.packs.join(", ")
+        ));
+        eprintln!("Mods: {} images, {} sounds ({})", mods.images.len(), mods.sounds.len(), mods.packs.join(", "));
+    }
+    v.textures.mods = mods.clone();
+    v.audio.mods = mods;
     v.on_frame_changed();
     if opts.screenshot.is_none() {
         let g = &v.rt.game;

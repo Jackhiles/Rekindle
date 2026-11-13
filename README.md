@@ -74,6 +74,20 @@ Play time is logged per session in `%APPDATA%\Rekindle\playtime.tsv`; the launch
 play, and **Play log** lists every session. **Open folder** opens the Rekindle folder with saves, the play log and each
 game's `rekindle.log`. A game's own "end application" action closes its window.
 
+### Mods (replacement packs)
+Images and sounds can be replaced without touching the game. Each game has a mods folder,
+`%APPDATA%\Rekindle\mods\<game file name>\` (the launcher's **Mods** button creates and opens it, with a how-to):
+
+```text
+mods\MyGame\imagesS.png              replaces image 123
+mods\MyGame\HD pack\imagesS.png      ...or inside any pack folder (packs apply in alphabetical order, later wins)
+mods\MyGame\sounds%.wav               replaces sound 45 (.ogg / .mp3 too)
+```
+
+Find the numbers with `rekindle GAME --extract DIR` (exported files such as `123_name.png` can be dropped back in as
+they are). Replacement images are drawn at the original size, so higher-resolution images just look sharper, and
+collisions still use the original images, so gameplay is unchanged.
+
 ### Display and errors
 - **Fullscreen**: games that ask for fullscreen at start get it; `--fullscreen` / `--windowed` override that, and
   Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `rekindle.ini` in the save folder.

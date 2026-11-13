@@ -54,6 +54,8 @@ pub struct AudioOut {
     tx: Sender<Decoded>,
     rx: Receiver<Decoded>,
     pub enabled: bool,
+    /// Replacement sounds from mods.
+    pub mods: std::sync::Arc<crate::mods::Mods>,
 }
 
 impl AudioOut {
@@ -67,22 +69,24 @@ impl AudioOut {
             tx,
             rx,
             enabled,
+            mods: Default::default(),
         }
     }
 
-    fn decode_samples(rt: &Runtime, handle: u32) -> Option<impl FnOnce() -> Result<(Vec<i16>, f64), String>> {
+    fn decode_samples(&self, rt: &Runtime, handle: u32) -> Option<impl FnOnce() -> Result<(Vec<i16>, f64), String>> {
         let entry = rt.game.sounds.get(handle)?.clone();
+        let replacement = self.mods.sound(handle);
         Some(move || {
-            entry
-                .data()
-                .map_err(|e| format!("{e:#}"))
+            replacement
+                .map(Ok)
+                .unwrap_or_else(|| entry.data().map_err(|e| format!("{e:#}")))
                 .and_then(|d| audio::decode(&d).map_err(|e| format!("{e:#}")))
                 .map(|pcm| (audio::to_stereo_44k(&pcm), pcm.duration_ms()))
         })
     }
 
     fn start_decode(&mut self, rt: &Runtime, handle: u32) {
-        let Some(job) = Self::decode_samples(rt, handle) else {
+        let Some(job) = self.decode_samples(rt, handle) else {
             self.slots.insert(handle, Slot::Failed);
             return;
         };
@@ -98,7 +102,7 @@ impl AudioOut {
         if !first {
             return; // a worker is already on it; it will use the latest request
         }
-        let Some(job) = Self::decode_samples(rt, handle) else { return };
+        let Some(job) = self.decode_samples(rt, handle) else { return };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             if let Ok((samples, _)) = job() {

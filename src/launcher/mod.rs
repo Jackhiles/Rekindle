@@ -372,7 +372,7 @@ impl Launcher {
                 let stats = format!("Played {}  -  last {last}", playlog::duration(*secs));
                 self.text(&stats, row.x + 76.0 + tw + 16.0, row.y + 30.0, 15, ACCENT);
             }
-            let max_w = row.w - 76.0 - 330.0;
+            let max_w = row.w - 76.0 - 410.0;
             while self.text_width(&p, 14) > max_w && p.chars().count() > 8 {
                 p = format!("...{}", p.chars().skip(4).collect::<String>());
             }
@@ -380,13 +380,16 @@ impl Launcher {
 
             let by = row.y + (row.h - 34.0) / 2.0;
             let remove = Rect::new(row.x + row.w - 12.0 - 40.0, by, 40.0, 34.0);
-            let shortcut = Rect::new(remove.x - 8.0 - 150.0, by, 150.0, 34.0);
+            let mods = Rect::new(remove.x - 8.0 - 70.0, by, 70.0, 34.0);
+            let shortcut = Rect::new(mods.x - 8.0 - 150.0, by, 150.0, 34.0);
             let play = Rect::new(shortcut.x - 8.0 - 100.0, by, 100.0, 34.0);
             let in_list = mouse.y > top && mouse.y < bottom;
             if self.button(play, "Play", true, !missing) && in_list {
                 action = Some((i, 0));
             } else if self.button(shortcut, "Desktop shortcut", false, !missing) && in_list {
                 action = Some((i, 1));
+            } else if self.button(mods, "Mods", false, true) && in_list {
+                action = Some((i, 3));
             } else if self.button(remove, "X", false, true) && in_list {
                 action = Some((i, 2));
             } else if hover && is_mouse_button_pressed(MouseButton::Left) {
@@ -409,6 +412,17 @@ impl Launcher {
                 match library::create_shortcut(&e.path, &e.title) {
                     Ok(p) => self.say(format!("Shortcut created: {}", p.display())),
                     Err(err) => self.say(format!("Could not create the shortcut: {err}")),
+                }
+            }
+            Some((i, 3)) => {
+                let path = self.entries[i].path.clone();
+                match crate::mods::Mods::ensure_dir(&path) {
+                    Ok(dir) => {
+                        let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                        let _ = std::process::Command::new(opener).arg(&dir).spawn();
+                        self.say(format!("Mods folder: {} (see README.txt inside)", dir.display()));
+                    }
+                    Err(err) => self.say(format!("Could not create the mods folder: {err}")),
                 }
             }
             Some((i, _)) => {
