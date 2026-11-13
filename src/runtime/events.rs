@@ -251,7 +251,16 @@ impl Runtime {
         false
     }
 
+    /// Mouse hit test. `x, y` are frame coordinates at full scroll; objects on layers that
+    /// scroll less (e.g. a fixed HUD layer) are tested in their own layer's coordinates.
     fn point_in(&self, idx: usize, x: f64, y: f64) -> bool {
+        let (cx, cy) = self
+            .frame()
+            .layers
+            .get(self.instances[idx].layer)
+            .map_or((1.0, 1.0), |l| l.scroll_coefficients());
+        let x = x - self.scroll.0 * (1.0 - cx as f64);
+        let y = y - self.scroll.1 * (1.0 - cy as f64);
         let (bx, by, bw, bh) = self.bounds_of(idx);
         x >= bx && x < bx + bw && y >= by && y < by + bh
     }
@@ -538,13 +547,14 @@ impl Runtime {
                 hit && (c.num == -5 || self.mouse_in_zone(c, 1, input))
             }
             (MOUSE, -3) => self.mouse_in_zone(c, 0, input),
+            // Like collisions, mouse tests also hit hidden objects (games use invisible hover zones).
             (MOUSE, -4) => {
                 let Some(oi) = Self::param_object(c, 0) else {
                     return false;
                 };
                 let (mx, my) = input.mouse;
                 return self.filter(oi, sel, neg, |rt, _, i| {
-                    rt.instances[i].visible && rt.point_in(i, mx, my)
+                    rt.point_in(i, mx, my)
                 });
             }
             (MOUSE, -7) => {
@@ -565,7 +575,7 @@ impl Runtime {
                 };
                 let (mx, my) = input.mouse;
                 return self.filter(oi, sel, neg, |rt, _, i| {
-                    rt.instances[i].visible && rt.point_in(i, mx, my)
+                    rt.point_in(i, mx, my)
                 });
             }
             (MOUSE, -10) => self.cursor_visible,

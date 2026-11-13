@@ -83,6 +83,11 @@ struct Cli {
     #[arg(long, value_name = "N")]
     headless: Option<u64>,
 
+    /// With --screenshot DIR: drive the game with an input script (press / hold / mouse / click)
+    /// and save a PNG into DIR at every `shot TICK name.png` line.
+    #[arg(long, value_name = "FILE")]
+    script: Option<PathBuf>,
+
     /// Run a scenario script (or every *.scn in a folder) and report pass / fail.
     #[arg(long, value_name = "FILE|DIR")]
     scenario: Option<PathBuf>,
@@ -151,6 +156,13 @@ fn main() -> Result<()> {
         screenshot_ticks: cli.ticks,
         mute: cli.mute,
         save_dir: cli.save_dir,
+        script: match &cli.script {
+            Some(p) => Some(
+                runtime::script::InputScript::parse(&std::fs::read_to_string(p)?)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?,
+            ),
+            None => None,
+        },
     };
     let conf = render::window_conf(&game);
     macroquad::Window::from_config(conf, render::run(game, opts));

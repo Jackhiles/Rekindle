@@ -12,6 +12,7 @@ pub mod files;
 pub mod input;
 pub mod instance;
 pub mod scenario;
+pub mod script;
 pub mod value;
 
 use crate::ctf_loader::events::Events;
@@ -910,14 +911,15 @@ impl Runtime {
                 if frames.is_empty() {
                     return None;
                 }
-                let handles = if inst.kind == ObjectKind::Lives {
+                if inst.kind == ObjectKind::Lives {
                     // One icon per life.
-                    vec![frames[0] as u32; value.as_i32().clamp(0, 64) as usize]
+                    let handles = vec![frames[0] as u32; value.as_i32().clamp(0, 64) as usize];
+                    (Visual::Glyphs { handles }, 0.0, 0.0)
                 } else {
+                    // A single frame, placed by its hotspot like an Active's image.
                     let i = (fraction * (frames.len() - 1) as f32).round() as usize;
-                    vec![frames[i.min(frames.len() - 1)] as u32]
-                };
-                (Visual::Glyphs { handles }, 0.0, 0.0)
+                    (Visual::Image { handle: frames[i.min(frames.len() - 1)] as u32 }, 0.0, 0.0)
+                }
             }
             CounterDisplayKind::HorizontalBar(shape) => (
                 Visual::Shape {

@@ -15,6 +15,19 @@ pub struct Layer {
     pub name: String,
 }
 
+impl Layer {
+    pub const VISIBLE: u32 = 0x10;
+    pub const X_COEF: u32 = 0x01;
+    pub const Y_COEF: u32 = 0x02;
+
+    /// How much of the frame's scroll this layer follows (1 = all, 0 = fixed on screen).
+    pub fn scroll_coefficients(&self) -> (f32, f32) {
+        let cx = if self.flags & Self::X_COEF != 0 { self.x_coefficient } else { 1.0 };
+        let cy = if self.flags & Self::Y_COEF != 0 { self.y_coefficient } else { 1.0 };
+        (cx, cy)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ObjectInstance {
     /// Unique instance handle within the frame.

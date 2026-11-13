@@ -16,8 +16,6 @@ use std::path::PathBuf;
 
 /// Layer flag: layer is visible.
 const LAYER_VISIBLE: u32 = 0x10;
-const LAYER_X_COEF: u32 = 0x01;
-const LAYER_Y_COEF: u32 = 0x02;
 
 #[derive(Debug, Clone, Default)]
 pub struct ViewerOptions {
@@ -34,6 +32,8 @@ pub struct ViewerOptions {
     pub run_events: bool,
     /// With `screenshot`: game ticks to simulate before capturing.
     pub screenshot_ticks: u32,
+    /// With `screenshot` (a folder): scripted input and the ticks to capture at.
+    pub script: Option<crate::runtime::script::InputScript>,
     /// Disable sound output.
     pub mute: bool,
     /// Where game save files go (None = default per-game folder).
@@ -679,16 +679,7 @@ impl Viewer {
         let layer_info: Vec<(bool, Vec2)> = (0..layer_count)
             .map(|i| match frame.layers.get(i) {
                 Some(l) => {
-                    let cx = if l.flags & LAYER_X_COEF != 0 {
-                        l.x_coefficient
-                    } else {
-                        1.0
-                    };
-                    let cy = if l.flags & LAYER_Y_COEF != 0 {
-                        l.y_coefficient
-                    } else {
-                        1.0
-                    };
+                    let (cx, cy) = l.scroll_coefficients();
                     (l.flags & LAYER_VISIBLE != 0, vec2(cx, cy))
                 }
                 None => (true, Vec2::ONE),
@@ -1146,6 +1137,34 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         if let Some(off) = v.layer_off.get_mut(l) {
             *off = true;
         }
+    }
+
+    if let (Some(dir), Some(script)) = (&opts.screenshot, &opts.script) {
+        let _ = std::fs::create_dir_all(dir);
+        let mut input = Input::default();
+        for t in 0..=script.last_tick() {
+            script.apply(t, &mut input, v.rt.scroll);
+            v.rt.tick(&input);
+            input.consume_edges();
+            if v.rt.frame_log.len() != v.shown_frame {
+                v.on_frame_changed();
+            }
+            for (_, name) in script.shots.iter().filter(|s| s.0 == t) {
+                for _ in 0..2 {
+                    v.draw();
+                    next_frame().await;
+                }
+                v.draw();
+                let path = dir.join(name);
+                get_screen_data().export_png(&path.to_string_lossy());
+                eprintln!("tick {t}: frame {} \"{}\" -> {}", v.rt.frame_index, v.rt.frame().name, path.display());
+            }
+            if v.rt.finished {
+                eprintln!("tick {t}: game ended");
+                break;
+            }
+        }
+        return;
     }
 
     if let Some(path) = opts.screenshot {
