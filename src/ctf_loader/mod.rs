@@ -8,6 +8,7 @@ pub mod events;
 pub mod exe;
 pub mod fonts;
 pub mod frame;
+pub mod icon;
 pub mod header;
 pub mod images;
 pub mod objects;
@@ -80,6 +81,8 @@ pub struct GameData {
 
     pub chunks: Vec<ChunkStat>,
     pub warnings: Vec<String>,
+    /// The executable's own icon (from its Windows resources), if it has one.
+    pub icon: Option<icon::IconImage>,
 }
 
 impl GameData {
@@ -295,6 +298,7 @@ impl GameData {
             fonts,
             chunks: chunk_stats,
             warnings,
+            icon: icon::from_pe(&file),
         })
     }
 }

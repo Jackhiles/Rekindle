@@ -32,6 +32,10 @@ pub fn write_png(img: &RgbaImage, path: &Path) -> Result<()> {
 pub fn extract_all(g: &GameData, dir: &Path) -> Result<()> {
     let img_dir = dir.join("images");
     fs::create_dir_all(&img_dir).with_context(|| format!("creating {}", img_dir.display()))?;
+    if let Some(icon) = &g.icon {
+        let img = RgbaImage { width: icon.width, height: icon.height, pixels: icon.rgba.clone() };
+        write_png(&img, &dir.join("icon.png"))?;
+    }
     let (mut ok, mut failed) = (0, 0);
     for e in &g.images.images {
         if e.width == 0 || e.height == 0 {

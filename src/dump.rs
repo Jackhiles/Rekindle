@@ -66,6 +66,10 @@ pub fn print_info(g: &GameData, verbose: bool) {
         if h.stretch() { ", stretch to window" } else { "" }
     );
     println!(
+        "  Icon          {}",
+        g.icon.as_ref().map_or("none".to_string(), |i| format!("{}x{}", i.width, i.height))
+    );
+    println!(
         "  Start         score {}, lives {}",
         h.initial_score, h.initial_lives
     );
