@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#282634"/><stop offset="1" stop-color="#100f16"/></linearGradient>
+    <linearGradient id="outer" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffb22e"/><stop offset="1" stop-color="#ff5416"/></linearGradient>
+    <linearGradient id="inner" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffeca0"/><stop offset="1" stop-color="#fffcec"/></linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.66" r="0.32"><stop offset="0" stop-color="#ff6e1e" stop-opacity="0.6"/><stop offset="1" stop-color="#ff6e1e" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#tile)"/>
+  <rect width="256" height="256" rx="56" fill="url(#glow)"/>
+  <path d="M128.0,225.3 C79.4,225.3 51.2,192.0 53.8,153.6 C56.3,120.3 79.4,102.4 92.2,76.8 C97.3,97.3 107.5,107.5 120.3,112.6 C117.8,81.9 128.0,51.2 148.5,28.2 C153.6,61.4 179.2,81.9 194.6,112.6 C209.9,143.4 207.4,179.2 192.0,199.7 C176.6,217.6 153.6,225.3 128.0,225.3 Z" fill="url(#outer)"/>
+  <path d="M128.0,220.2 C99.8,220.2 87.0,199.7 92.2,179.2 C97.3,158.7 117.8,145.9 133.1,112.6 C143.4,138.2 163.8,153.6 166.4,179.2 C169.0,204.8 153.6,220.2 128.0,220.2 Z" fill="url(#inner)"/>
+</svg>

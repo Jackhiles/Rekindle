@@ -128,7 +128,7 @@ fn main() -> Result<()> {
         return run_scenarios(target);
     }
     if let Some(out) = &cli.write_icon {
-        rekindle::launcher::library::write_png(out, 256, &rekindle::launcher::flame_icon(256))?;
+        std::fs::write(out, rekindle::launcher::ICON_PNG)?;
         return Ok(());
     }
     if !cli.add.is_empty() {

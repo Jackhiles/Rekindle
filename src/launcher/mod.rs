@@ -72,40 +72,40 @@ const ROW_STEP: f32 = 54.0;
 const HEADER_H: f32 = 72.0;
 const STATUS_H: f32 = 30.0;
 
-/// A small flame drawn in code (the repository ships no image files).
-pub fn flame_icon(size: usize) -> Vec<u8> {
-    let mut px = vec![0u8; size * size * 4];
-    let s = size as f32;
-    for y in 0..size {
-        for x in 0..size {
-            // Teardrop: round at the bottom, pointed at the top.
-            let u = (x as f32 + 0.5) / s * 2.0 - 1.0;
-            let v = (y as f32 + 0.5) / s; // 0 top .. 1 bottom
-            let half_w = if v < 0.62 { 0.62 * (v / 0.62).powf(1.6) } else { 0.62 * (1.0 - ((v - 0.62) / 0.36).powi(2)).max(0.0).sqrt() };
-            let lean = 0.12 * (1.0 - v) * (v * 9.0).sin();
-            let d = ((u - lean).abs() / half_w.max(1e-3)).min(2.0);
-            if d >= 1.0 || v > 0.98 {
-                continue;
-            }
-            // Hot yellow core, orange body, red rim.
-            let core = (1.0 - d) * v;
-            let (r, g, b) = (255.0, 90.0 + 160.0 * core.min(1.0), 20.0 + 90.0 * (core - 0.5).max(0.0));
-            let a = ((1.0 - d) * 6.0).min(1.0);
-            let o = (y * size + x) * 4;
-            px[o..o + 4].copy_from_slice(&[r as u8, g.min(255.0) as u8, b as u8, (a * 255.0) as u8]);
-        }
-    }
-    px
+/// Rekindle's icon (assets/icon, drawn by make_icon.py) and the launcher's UI font
+/// (Inter, SIL Open Font License; see assets/fonts).
+pub const ICON_PNG: &[u8] = include_bytes!("../../assets/icon/rekindle-256.png");
+const FONT_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+const FONT_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
+
+/// The icon decoded to 256 x 256 RGBA.
+pub fn icon_image() -> Option<crate::ctf_loader::icon::IconImage> {
+    let dec = png::Decoder::new(std::io::Cursor::new(ICON_PNG));
+    let mut r = dec.read_info().ok()?;
+    let mut buf = vec![0; r.output_buffer_size()];
+    let info = r.next_frame(&mut buf).ok()?;
+    (info.color_type == png::ColorType::Rgba).then(|| crate::ctf_loader::icon::IconImage {
+        width: info.width,
+        height: info.height,
+        rgba: buf[..(info.width * info.height * 4) as usize].to_vec(),
+    })
+}
+
+/// Window / taskbar icon in the sizes the window system wants.
+pub fn window_icon() -> Option<macroquad::miniquad::conf::Icon> {
+    let img = icon_image()?;
+    let mut icon = macroquad::miniquad::conf::Icon::miniquad_logo();
+    icon.small.copy_from_slice(&img.resized(16));
+    icon.medium.copy_from_slice(&img.resized(32));
+    icon.big.copy_from_slice(&img.resized(64));
+    Some(icon)
 }
 
 pub fn window_conf() -> Conf {
-    let mut icon = macroquad::miniquad::conf::Icon::miniquad_logo();
-    icon.small.copy_from_slice(&flame_icon(16));
-    icon.medium.copy_from_slice(&flame_icon(32));
-    icon.big.copy_from_slice(&flame_icon(64));
+    let icon = window_icon();
     Conf {
         window_title: "Rekindle".into(),
-        icon: Some(icon),
+        icon,
         window_width: 960,
         window_height: 640,
         window_resizable: true,
@@ -126,6 +126,9 @@ struct Launcher {
     entries: Vec<Entry>,
     icons: HashMap<PathBuf, Option<Texture2D>>,
     font: Option<Font>,
+    /// Title and button labels.
+    bold: Option<Font>,
+    logo: Option<Texture2D>,
     scroll: f32,
     status: Option<(String, f64)>,
     busy: Option<String>,
@@ -154,14 +157,14 @@ struct Launcher {
 impl Launcher {
     fn new() -> Self {
         let (tx, rx) = channel();
-        let font = crate::render::text::find_font_file("Segoe UI", false, false)
-            .or_else(|| crate::render::text::find_font_file("arial", false, false))
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| load_ttf_font_from_bytes(&b).ok());
+        let font = load_ttf_font_from_bytes(FONT_REGULAR).ok();
+        let bold = load_ttf_font_from_bytes(FONT_SEMIBOLD).ok();
         Self {
             entries: library::load(),
             icons: HashMap::new(),
             font,
+            bold,
+            logo: None,
             scroll: 0.0,
             status: None,
             busy: None,
@@ -331,6 +334,36 @@ impl Launcher {
         measure_text(s, self.font.as_ref(), size, 1.0).width
     }
 
+    /// `s` shortened with "..." to fit `max_w` pixels.
+    fn fit(&self, s: &str, size: u16, max_w: f32) -> String {
+        if self.text_width(s, size) <= max_w {
+            return s.to_string();
+        }
+        let mut chars: Vec<char> = s.chars().collect();
+        while !chars.is_empty() && self.text_width(&format!("{}...", chars.iter().collect::<String>()), size) > max_w {
+            chars.pop();
+        }
+        format!("{}...", chars.iter().collect::<String>().trim_end())
+    }
+
+    fn bold_text(&self, s: &str, x: f32, y: f32, size: u16, color: Color) {
+        let params = TextParams { font: self.bold.as_ref().or(self.font.as_ref()), font_size: size, color, ..Default::default() };
+        draw_text_ex(s, x, y, params);
+    }
+
+    fn bold_width(&self, s: &str, size: u16) -> f32 {
+        measure_text(s, self.bold.as_ref().or(self.font.as_ref()), size, 1.0).width
+    }
+
+    fn logo(&mut self) -> Option<Texture2D> {
+        if self.logo.is_none() {
+            let t = Texture2D::from_file_with_format(ICON_PNG, Some(ImageFormat::Png));
+            t.set_filter(FilterMode::Linear);
+            self.logo = Some(t);
+        }
+        self.logo.clone()
+    }
+
     /// A button; returns true when clicked.
     fn button(&self, r: Rect, label: &str, accent: bool, enabled: bool) -> bool {
         let hover = enabled && r.contains(Vec2::from(mouse_position()));
@@ -343,9 +376,9 @@ impl Launcher {
             base
         };
         draw_rectangle(r.x, r.y, r.w, r.h, color);
-        let tw = self.text_width(label, 17);
+        let tw = self.bold_width(label, 16);
         let fg = if accent { Color::new(0.1, 0.06, 0.02, 1.0) } else { TEXT };
-        self.text(label, r.x + (r.w - tw) / 2.0, r.y + r.h / 2.0 + 6.0, 17, fg);
+        self.bold_text(label, r.x + (r.w - tw) / 2.0, r.y + r.h / 2.0 + 6.0, 16, fg);
         hover && is_mouse_button_pressed(MouseButton::Left)
     }
 
@@ -451,9 +484,17 @@ impl Launcher {
         let idle = self.busy.is_none();
 
         // Header.
-        self.text("Rekindle", 24.0, 46.0, 34, TEXT);
-        let tw = self.text_width("Rekindle", 34);
-        self.text(&format!("Fusion game launcher  v{}", update::current_version()), 24.0 + tw + 14.0, 46.0, 17, MUTED);
+        // Logo and title.
+        if let Some(t) = self.logo() {
+            draw_texture_ex(&t, 22.0, 18.0, WHITE, DrawTextureParams { dest_size: Some(vec2(38.0, 38.0)), ..Default::default() });
+        }
+        self.bold_text("Rekindle", 70.0, 47.0, 32, TEXT);
+        let tw = self.bold_width("Rekindle", 32) + 46.0;
+        let subtitle = format!("Fusion game launcher  v{}", update::current_version());
+        // Only when it fits left of the header buttons (4 buttons + gaps = 586 px).
+        if 24.0 + tw + 14.0 + self.text_width(&subtitle, 17) < sw - 24.0 - 586.0 - 12.0 {
+            self.text(&subtitle, 24.0 + tw + 14.0, 46.0, 17, MUTED);
+        }
         let add_folder = Rect::new(sw - 24.0 - 150.0, 20.0, 150.0, 36.0);
         let add_game = Rect::new(add_folder.x - 12.0 - 140.0, 20.0, 140.0, 36.0);
         let log_btn = Rect::new(add_game.x - 12.0 - 120.0, 20.0, 120.0, 36.0);
@@ -525,15 +566,22 @@ impl Launcher {
             }
             let e = &self.entries[i];
             let missing = !e.path.is_file();
-            self.text(&e.title, row.x + 76.0, row.y + 30.0, 21, if missing { MUTED } else { TEXT });
+            let title_w = row.w - 76.0 - 470.0;
+            let title = self.fit(&e.title, 21, title_w);
+            self.text(&title, row.x + 76.0, row.y + 30.0, 21, if missing { MUTED } else { TEXT });
             let mut p = e.path.display().to_string();
             if missing {
                 p = format!("(missing) {p}");
             }
             if let Some((secs, last)) = self.totals.get(&e.path.to_string_lossy().to_lowercase()) {
-                let tw = self.text_width(&e.title, 21);
+                let tw = self.text_width(&title, 21);
                 let stats = format!("Played {}  -  last {last}", playlog::duration(*secs));
-                self.text(&stats, row.x + 76.0 + tw + 16.0, row.y + 30.0, 15, ACCENT);
+                // Next to the title when there's room, otherwise in place of the path.
+                if tw + 16.0 + self.text_width(&stats, 15) <= title_w {
+                    self.text(&stats, row.x + 76.0 + tw + 16.0, row.y + 30.0, 15, ACCENT);
+                } else {
+                    p = stats;
+                }
             }
             let max_w = row.w - 76.0 - 460.0;
             while self.text_width(&p, 14) > max_w && p.chars().count() > 8 {

@@ -66,13 +66,17 @@ pub fn window_conf(g: &GameData, s: &settings::Settings) -> Conf {
         window_height: (h * scale) as i32,
         window_resizable: true,
         high_dpi: false,
-        icon: g.icon.as_ref().map(|i| {
-            let mut icon = macroquad::miniquad::conf::Icon::miniquad_logo();
-            icon.small.copy_from_slice(&i.resized(16));
-            icon.medium.copy_from_slice(&i.resized(32));
-            icon.big.copy_from_slice(&i.resized(64));
-            icon
-        }),
+        icon: g
+            .icon
+            .as_ref()
+            .map(|i| {
+                let mut icon = macroquad::miniquad::conf::Icon::miniquad_logo();
+                icon.small.copy_from_slice(&i.resized(16));
+                icon.medium.copy_from_slice(&i.resized(32));
+                icon.big.copy_from_slice(&i.resized(64));
+                icon
+            })
+            .or_else(crate::launcher::window_icon),
         ..Default::default()
     }
 }

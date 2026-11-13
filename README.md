@@ -227,3 +227,8 @@ reference/python/ original exploratory Python parsers (structural reference only
 ## Clean-room and legal notes
 - Never commit game files or anything extracted from them. `.gitignore` excludes `*.exe`, `*.ccn`, audio files and the local `Tools/` folder.
 - Format knowledge comes from inspecting user-supplied files and from publicly documented community research. No Clickteam code is used.
+
+## Assets and licences
+Rekindle's own assets live in `assets/`: the icon (`assets/icon/`, drawn by `make_icon.py`, which writes the SVG design,
+the PNG and the Windows `.ico`) and the launcher's UI font, [Inter](https://github.com/rsms/inter), under the SIL Open
+Font License 1.1 (`assets/fonts/Inter-LICENSE.txt`). No game files or other copyrighted content are included.
