@@ -129,6 +129,11 @@ struct Cli {
     #[arg(long, value_name = "N")]
     sweep: Option<u64>,
 
+    /// Save manager: `status` lists the game's save files; `import` replaces Rekindle's
+    /// saves with the original game's, `export` the other way round (backups are kept).
+    #[arg(long, value_name = "status|import|export")]
+    saves: Option<String>,
+
     /// Visit every event of every frame once (conditions, actions, expressions) and list what
     /// is unsupported, with the frames that use it.
     #[arg(long)]
@@ -237,6 +242,36 @@ fn main() -> Result<()> {
     }
     if let Some(f) = cli.dump_events {
         dump::print_events(&game, f);
+        return Ok(());
+    }
+    if let Some(cmd) = &cli.saves {
+        use rekindle::runtime::save_sync::{self, Direction};
+        let fs = runtime::files::SaveFs::new(&game_path, runtime::files::save_root_for(&game_path, &game.name));
+        println!("Rekindle saves: {}", fs.save_root.display());
+        match cmd.as_str() {
+            "import" | "export" => {
+                let dir = if cmd == "import" { Direction::Import } else { Direction::Export };
+                let r = save_sync::copy(&fs, dir);
+                println!("{} copied, {} removed", r.copied, r.removed);
+                if let Some(b) = r.backup {
+                    println!("backup: {}", b.display());
+                }
+                for e in &r.errors {
+                    println!("error: {e}");
+                }
+            }
+            _ => {
+                for f in save_sync::list(&fs) {
+                    println!(
+                        "  rekindle {:>14}  original {:>14}  {}",
+                        save_sync::age(f.rekindle_time),
+                        save_sync::age(f.original_time),
+                        f.original.display()
+                    );
+                }
+                println!("{}", save_sync::status(&fs).line());
+            }
+        }
         return Ok(());
     }
     if cli.probe {

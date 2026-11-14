@@ -9,6 +9,7 @@ pub mod events;
 pub mod expr;
 pub mod ext;
 pub mod files;
+pub mod save_sync;
 pub mod input;
 pub mod instance;
 pub mod scenario;
@@ -845,7 +846,7 @@ impl Runtime {
         if let Some(i) = self.file_sounds.iter().position(|(p, _)| p.eq_ignore_ascii_case(path)) {
             return Some(FILE_SOUND_BASE + i as u32);
         }
-        let bytes = self.files.read(path)?;
+        let bytes = self.files.read_asset(path)?;
         let ms = crate::audio::estimate_duration_ms(&bytes).unwrap_or(1000.0);
         let handle = FILE_SOUND_BASE + self.file_sounds.len() as u32;
         self.file_sounds.push((path.to_string(), bytes.into()));

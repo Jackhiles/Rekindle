@@ -68,6 +68,8 @@ Extension objects (`.mfx` files) are reimplemented natively in `src/runtime/ext/
 
 Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified.
 
+To move progress between Rekindle and the original game, open a game's **Settings** in the launcher and use the **Saves** row: *Use original game's saves* replaces Rekindle's copies with the original game's, *Copy to original game* does the reverse (each needs a second click). Whatever gets replaced or removed is first copied to `backups\<time>\` in the game's Rekindle folder. From the command line: `rekindle <GAME> --saves status|import|export`. The save manager knows a game's files from its Rekindle folder and from the original files the game has read (listed in `original-files.txt`).
+
 Anything not implemented yet is counted rather than crashing: see the HUD or `--headless`. Extension objects (`ext:...`) are the most common gap.
 
 ### Getting started
@@ -210,6 +212,7 @@ rekindle <GAME>                         run the game
           [--screenshot out.png [--ticks N]]   render (after N ticks) to a PNG and exit
 rekindle <GAME> --headless N [--press TICK:VK]...   simulate N ticks without a window
 rekindle <GAME> --sweep N               run every frame N ticks and list unsupported features
+rekindle <GAME> --saves status         list save files (import / export copy them; backups kept)
 rekindle <GAME> --probe                 try every condition / action / expression of every frame once
                                         and list the unsupported ones with the frames that use them
 rekindle <GAME> --dump-events N         print frame N's event sheet
@@ -246,6 +249,7 @@ src/runtime/      object runtime + event interpreter (no rendering deps)
   value.rs        Fusion values (int / float / string)
   audio.rs        logical sample / channel playback state
   files.rs        sandboxed save-file access
+  save_sync.rs    save manager: import / export between Rekindle and the original game
   ext/            native extension implementations (ini.rs, gsx.rs, clock.rs)
   scenario.rs     scripted regression scenarios
 src/audio.rs      decoding any bank sound, streamed block by block (symphonia), and resampling

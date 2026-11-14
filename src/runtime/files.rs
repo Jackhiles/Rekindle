@@ -20,7 +20,13 @@ pub struct SaveFs {
     /// Tests: never read the player's real AppData files (saves made outside the sandbox),
     /// only the sandbox and the game's own folder.
     pub isolated: bool,
+    /// Original files already noted in ORIGINALS_LIST this session.
+    noted: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
+
+/// In a save folder: the game paths of original files the game has read (one per line),
+/// so the save manager knows which original files belong to the game.
+pub const ORIGINALS_LIST: &str = "original-files.txt";
 
 fn norm(p: &str) -> String {
     p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
@@ -54,6 +60,15 @@ pub fn default_save_root(title: &str) -> PathBuf {
     dir
 }
 
+/// The save folder of a game file whose header names it `name` (the file name if empty).
+pub fn save_root_for(game: &Path, name: &str) -> PathBuf {
+    if name.is_empty() {
+        default_save_root(&game.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+    } else {
+        default_save_root(name)
+    }
+}
+
 /// `%APPDATA%\Rekindle` (or the platform's data folder): saves, settings and the launcher library.
 pub fn data_root() -> PathBuf {
     let base = std::env::var_os("APPDATA")
@@ -85,6 +100,7 @@ impl SaveFs {
             save_root,
             appdata,
             isolated: false,
+            noted: Default::default(),
         }
     }
 
@@ -153,9 +169,74 @@ impl SaveFs {
     }
 
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        if let Ok(b) = std::fs::read(self.sandboxed(path)) {
+            return Some(b);
+        }
+        let b = self.real_allowed(path).then(|| std::fs::read(self.real(path)).ok()).flatten()?;
+        if !self.isolated {
+            self.note_original(path);
+        }
+        Some(b)
+    }
+
+    /// Read a game data file (a sound, an image) the same way, without counting it as a save.
+    pub fn read_asset(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(self.sandboxed(path))
             .ok()
             .or_else(|| self.real_allowed(path).then(|| std::fs::read(self.real(path)).ok()).flatten())
+    }
+
+    /// Remember that the game read an original file (see ORIGINALS_LIST).
+    fn note_original(&self, path: &str) {
+        let key = norm(&self.real(path).to_string_lossy());
+        let Ok(mut set) = self.noted.lock() else { return };
+        if !set.insert(key) {
+            return;
+        }
+        let list = self.save_root.join(ORIGINALS_LIST);
+        let known = std::fs::read_to_string(&list).unwrap_or_default();
+        let real = self.real(path).to_string_lossy().into_owned();
+        if known.lines().any(|l| norm(l) == norm(&real)) {
+            return;
+        }
+        let _ = std::fs::create_dir_all(&self.save_root);
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&list) {
+            let _ = writeln!(f, "{real}");
+        }
+    }
+
+    /// The original location of a file inside the save folder (`area/rest` as written by
+    /// `sandboxed`), or None for locations that cannot be mapped back.
+    pub fn original_of(&self, sandboxed: &Path) -> Option<PathBuf> {
+        let rel = sandboxed.strip_prefix(&self.save_root).ok()?;
+        let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
+        let area = parts.next()?;
+        let rest: Vec<String> = parts.collect();
+        if rest.is_empty() {
+            return None;
+        }
+        let mut out = match area.as_str() {
+            "app" => self.app_dir.clone(),
+            "appdata" => self.appdata.clone()?,
+            // `other/c/dir/file` came from `C:/dir/file`.
+            "other" if cfg!(windows) => {
+                let drive = rest.first()?;
+                if drive.len() != 1 {
+                    return None;
+                }
+                let mut p = PathBuf::from(format!("{}:\\", drive.to_uppercase()));
+                for r in &rest[1..] {
+                    p.push(r);
+                }
+                return Some(p);
+            }
+            _ => return None,
+        };
+        for r in &rest {
+            out.push(r);
+        }
+        Some(out)
     }
 
     /// May the real location of `path` be read? (Not AppData when isolated.)

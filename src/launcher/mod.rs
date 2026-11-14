@@ -193,6 +193,9 @@ struct Launcher {
     show_log: bool,
     /// Settings panel open for a game: (library index, its settings).
     settings_panel: Option<(usize, Settings)>,
+    /// Settings panel save row: cached status line, and a copy waiting for a second click.
+    saves_status: Option<(usize, String)>,
+    saves_confirm: Option<crate::runtime::save_sync::Direction>,
     /// The Steam games panel is open.
     steam_panel: bool,
     steam_lines: Vec<String>,
@@ -240,6 +243,8 @@ impl Launcher {
             next_log_check: 0.0,
             show_log: false,
             settings_panel: None,
+            saves_status: None,
+            saves_confirm: None,
             steam_panel: false,
             steam_lines: Vec::new(),
             config: LauncherConfig::load(),
@@ -761,6 +766,7 @@ impl Launcher {
                 let path = self.entries[i].path.clone();
                 let legacy = crate::runtime::files::default_save_root(&self.entries[i].title);
                 self.settings_panel = Some((i, Settings::for_game(&path, Some(&legacy))));
+                self.saves_status = None;
             }
             Some((i, 3)) => {
                 let path = self.entries[i].path.clone();
@@ -859,9 +865,73 @@ impl Launcher {
         if changed {
             s.save();
         }
+        y += ROW_STEP;
+        self.saves_row(i, y);
         let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
         let close = self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape) || self.pad_back;
         self.settings_panel = if close { None } else { Some((i, s)) };
+    }
+
+    /// Save manager row: move saves between Rekindle and the original game.
+    fn saves_row(&mut self, i: usize, y: f32) {
+        use crate::runtime::save_sync::{self, Direction};
+        let Some(entry) = self.entries.get(i).cloned() else { return };
+        let fs = crate::runtime::files::SaveFs::new(&entry.path, crate::runtime::files::save_root_for(&entry.path, &entry.title));
+        if self.saves_status.as_ref().is_none_or(|(k, _)| *k != i) {
+            self.saves_status = Some((i, save_sync::status(&fs).line()));
+            self.saves_confirm = None;
+        }
+        let hint = match self.saves_confirm {
+            Some(Direction::Import) => "Click again: replace Rekindle's saves with the original game's (a backup is kept)".to_string(),
+            Some(Direction::Export) => "Click again: replace the original game's saves with Rekindle's (a backup is kept)".to_string(),
+            None => self.saves_status.as_ref().map(|(_, s)| s.clone()).unwrap_or_default(),
+        };
+        let selected = match self.saves_confirm {
+            Some(Direction::Import) => 0,
+            Some(Direction::Export) => 1,
+            None => usize::MAX,
+        };
+        let x0 = 48.0;
+        self.text("Saves", x0, y + 23.0, 19, TEXT);
+        self.text(&hint, x0, y + 58.0, 14, MUTED);
+        let mut x = 400.0;
+        let mut clicked = None;
+        for (k, o) in ["Use original game's saves", "Copy to original game", "Open folder"].iter().enumerate() {
+            let w = self.text_width(o, 17) + 30.0;
+            if self.button(Rect::new(x, y + 6.0, w, 32.0), o, k == selected, true) {
+                clicked = Some(k);
+            }
+            x += w + 8.0;
+        }
+        let dir = match clicked {
+            Some(0) => Direction::Import,
+            Some(1) => Direction::Export,
+            Some(_) => {
+                let _ = std::fs::create_dir_all(&fs.save_root);
+                let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                let _ = std::process::Command::new(opener).arg(&fs.save_root).spawn();
+                return;
+            }
+            None => return,
+        };
+        if self.saves_confirm != Some(dir) {
+            self.saves_confirm = Some(dir);
+            return;
+        }
+        self.saves_confirm = None;
+        if self.is_running(&entry.path) {
+            self.say(format!("Close {} first, then copy its saves.", entry.title));
+            return;
+        }
+        let r = save_sync::copy(&fs, dir);
+        self.saves_status = None;
+        let what = if dir == Direction::Import { "Rekindle now uses the original game's saves" } else { "The original game now has Rekindle's saves" };
+        let backup = r.backup.map(|b| format!("; backup in {}", b.display())).unwrap_or_default();
+        if r.errors.is_empty() {
+            self.say(format!("{what}: {} copied, {} removed{backup}.", r.copied, r.removed));
+        } else {
+            self.say(format!("Copied {}, but {} failed: {}{backup}", r.copied, r.errors.len(), r.errors[0]));
+        }
     }
 
     /// Find Fusion games in Steam and add them (linked in place, or copied to storage).
