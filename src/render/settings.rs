@@ -12,6 +12,11 @@ pub enum Filter {
     Smooth,
     /// Bicubic (Catmull-Rom) upscaling: smooth but crisper than bilinear.
     Enhanced,
+    /// Bicubic plus edge sharpening kept within the neighbouring colours (no halos):
+    /// for drawn / rendered art.
+    Hd,
+    /// Scale2x-style rounding of stair-stepped diagonals, crisp elsewhere: for pixel art.
+    PixelArt,
 }
 
 /// How the game view is fitted into the window.
@@ -26,13 +31,21 @@ pub enum Scaling {
 }
 
 impl Filter {
-    pub const ALL: [Filter; 3] = [Filter::Sharp, Filter::Smooth, Filter::Enhanced];
+    pub const ALL: [Filter; 5] = [Filter::Sharp, Filter::Smooth, Filter::Enhanced, Filter::Hd, Filter::PixelArt];
     pub fn name(self) -> &'static str {
         match self {
             Filter::Sharp => "sharp",
             Filter::Smooth => "smooth",
             Filter::Enhanced => "enhanced",
+            Filter::Hd => "hd",
+            Filter::PixelArt => "pixel-art",
         }
+    }
+
+    /// The next filter in F9 order.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
     fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|f| f.name() == s)
@@ -110,7 +123,17 @@ impl Settings {
         if let Some(text) = text {
             s.apply(&text);
         }
-        s
+        s.with_env_overrides()
+    }
+
+    /// Testing: REKINDLE_SETTINGS="filter=hd;window_scale=3" overrides settings for this
+    /// run (written back only if the player changes a setting in game).
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(o) = std::env::var("REKINDLE_SETTINGS") {
+            self.apply(&o.replace(';', "
+"));
+        }
+        self
     }
 
     fn apply(&mut self, text: &str) {

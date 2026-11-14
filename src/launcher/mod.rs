@@ -832,7 +832,7 @@ impl Launcher {
         }
         y += ROW_STEP;
         let fi = Filter::ALL.iter().position(|v| *v == s.filter).unwrap_or(1);
-        if let Some(k) = self.choice_row(y, "Upscaling", "How the picture is enlarged: Enhanced is sharpest", &["Sharp pixels", "Smooth", "Enhanced"], fi) {
+        if let Some(k) = self.choice_row(y, "Upscaling", "HD for drawn art, Pixel art for pixel games", &["Sharp pixels", "Smooth", "Enhanced", "HD", "Pixel art"], fi) {
             s.filter = Filter::ALL[k];
             changed = true;
         }

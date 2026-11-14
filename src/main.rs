@@ -273,7 +273,7 @@ fn main() -> Result<()> {
         game_path: Some(game_path.clone()),
         settings: if cli.screenshot.is_some() {
             // Test captures: default look, and ignore any connected controller.
-            let mut s = render::settings::Settings::default();
+            let mut s = render::settings::Settings::default().with_env_overrides();
             s.pad = false;
             s
         } else {

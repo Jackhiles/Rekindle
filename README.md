@@ -151,7 +151,7 @@ collisions still use the original images, so gameplay is unchanged.
   Alt+Enter or F11 toggles while playing. Your last choice is remembered per game in `rekindle.ini` in the save folder.
 - **Per-game settings** (launcher: **Settings** on a game; stored in `%APPDATA%\Rekindle\settings\<game>.ini`):
   fullscreen (game default / on / off), window size (auto, 1x-3x), scaling (fit keeps the shape, integer keeps pixels
-  crisp, stretch fills the window), upscaling filter (sharp pixels, smooth, or enhanced bicubic), and whether the debug
+  crisp, stretch fills the window), upscaling filter (sharp pixels, smooth, enhanced bicubic, HD: bicubic with halo-free edge sharpening for drawn art, or pixel art: Scale2x-style diagonal smoothing), and whether the debug
   HUD shows at start. In game: F9 cycles the filter, F10 the scaling, F11 / Alt+Enter toggles fullscreen.
 - **Errors**: if something inside the game logic fails, the tick is skipped, a red notice appears and the details go to
   `rekindle.log` in the save folder; the game pauses after repeated failures. Unsupported features hit during play are
@@ -198,7 +198,7 @@ Run them with `rekindle --scenario FILE_OR_DIR`, or as part of `cargo test` by s
 Debug environment variables: `REKINDLE_PROFILE=1` makes `--headless` print the slowest events;
 `REKINDLE_NO_EFFECTS=1` disables distortion effects for comparison. `REKINDLE_TRACE=N` prints each condition result of event N every tick.
 `REKINDLE_HUD=compact|full|inspect` shows the overlay (also in screenshots). `REKINDLE_WALK_FRAMES=MS` shows every frame for MS milliseconds and exits (a memory benchmark; not logged as play time).
-With `--dump-info --verbose`, `REKINDLE_ALL_PARAS=1` lists every paragraph of text objects and `REKINDLE_EXT_DATA=1` prints each extension object's stored settings in hex.
+`REKINDLE_SETTINGS="filter=hd;window_scale=2"` overrides player settings for one run (also screenshots). With `--dump-info --verbose`, `REKINDLE_ALL_PARAS=1` lists every paragraph of text objects and `REKINDLE_EXT_DATA=1` prints each extension object's stored settings in hex.
 `REKINDLE_TEXTURE_MB=N` changes the texture cache budget (default 192 MB): textures are kept in a least-recently-used
 cache, and whatever the current frame draws is never dropped.
 

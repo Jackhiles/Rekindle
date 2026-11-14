@@ -224,6 +224,84 @@ void main() {
     gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }"#;
 
+/// "HD" filter: bicubic, then sharpened towards the edges and clamped to the 2x2
+/// neighbourhood's colour range so sharpening never rings.
+const HD_FS: &str = r#"#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+uniform vec2 tex_size;
+void main() {
+    vec2 p = uv * tex_size;
+    vec2 t1 = floor(p - 0.5) + 0.5;
+    vec2 f = p - t1;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (t1 - 1.0) / tex_size;
+    vec2 t3 = (t1 + 2.0) / tex_size;
+    vec2 t12 = (t1 + w2 / w12) / tex_size;
+    vec3 c = vec3(0.0);
+    c += texture2D(Texture, vec2(t0.x, t0.y)).rgb * w0.x * w0.y;
+    c += texture2D(Texture, vec2(t12.x, t0.y)).rgb * w12.x * w0.y;
+    c += texture2D(Texture, vec2(t3.x, t0.y)).rgb * w3.x * w0.y;
+    c += texture2D(Texture, vec2(t0.x, t12.y)).rgb * w0.x * w12.y;
+    c += texture2D(Texture, vec2(t12.x, t12.y)).rgb * w12.x * w12.y;
+    c += texture2D(Texture, vec2(t3.x, t12.y)).rgb * w3.x * w12.y;
+    c += texture2D(Texture, vec2(t0.x, t3.y)).rgb * w0.x * w3.y;
+    c += texture2D(Texture, vec2(t12.x, t3.y)).rgb * w12.x * w3.y;
+    c += texture2D(Texture, vec2(t3.x, t3.y)).rgb * w3.x * w3.y;
+    vec3 a = texture2D(Texture, t1 / tex_size).rgb;
+    vec3 b = texture2D(Texture, (t1 + vec2(1.0, 0.0)) / tex_size).rgb;
+    vec3 d = texture2D(Texture, (t1 + vec2(0.0, 1.0)) / tex_size).rgb;
+    vec3 e = texture2D(Texture, (t1 + vec2(1.0, 1.0)) / tex_size).rgb;
+    vec3 lo = min(min(a, b), min(d, e));
+    vec3 hi = max(max(a, b), max(d, e));
+    vec3 lin = texture2D(Texture, uv).rgb;
+    c = clamp(c + (c - lin) * 0.8, lo, hi);
+    gl_FragColor = vec4(c, 1.0);
+}"#;
+
+/// "Pixel art" filter: Scale2x rules per quarter of each source pixel, so stair-stepped
+/// diagonals are rounded off while flat areas and straight edges stay crisp.
+const PIXEL_FS: &str = r#"#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+uniform vec2 tex_size;
+vec3 at(vec2 t) { return texture2D(Texture, t / tex_size).rgb; }
+bool same(vec3 x, vec3 y) { vec3 d = abs(x - y); return max(max(d.r, d.g), d.b) < 0.02; }
+void main() {
+    vec2 p = uv * tex_size;
+    vec2 cell = floor(p) + 0.5;
+    vec2 f = fract(p);
+    vec3 E = at(cell);
+    vec3 B = at(cell + vec2(0.0, -1.0));
+    vec3 D = at(cell + vec2(-1.0, 0.0));
+    vec3 F = at(cell + vec2(1.0, 0.0));
+    vec3 H = at(cell + vec2(0.0, 1.0));
+    vec3 c = E;
+    if (!same(B, H) && !same(D, F)) {
+        if (f.x < 0.5 && f.y < 0.5 && same(D, B)) c = D;
+        else if (f.x >= 0.5 && f.y < 0.5 && same(B, F)) c = F;
+        else if (f.x < 0.5 && f.y >= 0.5 && same(D, H)) c = D;
+        else if (f.x >= 0.5 && f.y >= 0.5 && same(H, F)) c = F;
+    }
+    gl_FragColor = vec4(c, 1.0);
+}"#;
+
 /// Off-screen targets used when a frame contains distortion effects.
 struct Offscreen {
     size: (u32, u32),
@@ -233,6 +311,8 @@ struct Offscreen {
     blit: Option<Material>,
     /// Bicubic upscaling for the "enhanced" filter.
     bicubic: Option<Material>,
+    hd: Option<Material>,
+    pixel: Option<Material>,
 }
 
 impl Offscreen {
@@ -281,7 +361,20 @@ impl Offscreen {
         )
         .map_err(|e| eprintln!("bicubic shader unavailable: {e:?}"))
         .ok();
+        let upscaler = |fragment: &str, what: &str| {
+            load_material(
+                ShaderSource::Glsl { vertex: EFFECT_VS, fragment },
+                MaterialParams {
+                    uniforms: vec![UniformDesc::new("tex_size", UniformType::Float2)],
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| eprintln!("{what} shader unavailable: {e:?}"))
+            .ok()
+        };
         Self {
+            hd: upscaler(HD_FS, "HD"),
+            pixel: upscaler(PIXEL_FS, "pixel-art"),
             bicubic,
             size: (w, h),
             main,
@@ -309,12 +402,18 @@ impl Offscreen {
     fn present(&self, from: &RenderTarget, at: Vec2, size: Vec2, filter: settings::Filter) {
         let tex = &from.texture;
         tex.set_filter(if filter == settings::Filter::Sharp { FilterMode::Nearest } else { FilterMode::Linear });
-        let material = match (filter, &self.bicubic) {
-            (settings::Filter::Enhanced, Some(b)) => {
-                b.set_uniform("tex_size", vec2(self.size.0 as f32, self.size.1 as f32));
-                Some(b)
+        let upscaler = match filter {
+            settings::Filter::Enhanced => self.bicubic.as_ref(),
+            settings::Filter::Hd => self.hd.as_ref(),
+            settings::Filter::PixelArt => self.pixel.as_ref(),
+            _ => None,
+        };
+        let material = match upscaler {
+            Some(m) => {
+                m.set_uniform("tex_size", vec2(self.size.0 as f32, self.size.1 as f32));
+                Some(m)
             }
-            _ => self.blit.as_ref(),
+            None => self.blit.as_ref(),
         };
         if let Some(m) = material {
             gl_use_material(m);
@@ -885,12 +984,7 @@ impl Viewer {
             self.settings.save();
         }
         if is_key_pressed(KeyCode::F9) {
-            use settings::Filter::*;
-            self.settings.filter = match self.settings.filter {
-                Sharp => Smooth,
-                Smooth => Enhanced,
-                Enhanced => Sharp,
-            };
+            self.settings.filter = self.settings.filter.next();
             self.settings.save();
             self.notice = Some((format!("Filter: {}", self.settings.filter.name()), get_time() + 2.0));
         }
