@@ -1222,13 +1222,27 @@ impl Runtime {
                     ..
                 }) = a.params.first().map(|p| &p.value)
                 {
-                    if let Some((x, y, layer, dir)) = self.resolve_position(position, sel, None) {
-                        if let Some(idx) = self.create_instance(*object_info, x, y, layer) {
-                            if let Some(d) = dir {
-                                self.instances[idx].anim.dir = d;
+                    // Relative to an object: one new object per selected instance of it
+                    // (e.g. a child at each of several spawn points).
+                    let parents: Vec<Option<(u16, usize)>> = if position.parent_object_info != 0xFFFF && position.parent_type != 0 {
+                        let oi = position.parent_object_info;
+                        self.candidates(oi, sel).into_iter().map(|i| Some((oi, i))).collect()
+                    } else {
+                        vec![None]
+                    };
+                    let mut created = Vec::new();
+                    for cur in parents {
+                        if let Some((x, y, layer, dir)) = self.resolve_position(position, sel, cur) {
+                            if let Some(idx) = self.create_instance(*object_info, x, y, layer) {
+                                if let Some(d) = dir {
+                                    self.instances[idx].anim.dir = d;
+                                }
+                                created.push(idx);
                             }
-                            sel.insert(*object_info, vec![idx]);
                         }
+                    }
+                    if !created.is_empty() {
+                        sel.insert(*object_info, created);
                     }
                 }
             }
