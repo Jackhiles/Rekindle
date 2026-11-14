@@ -87,7 +87,7 @@ impl Launcher {
     }
 
     /// A small square button with a drawn icon; returns true when clicked.
-    fn icon_button(&self, r: Rect, draw_icon: impl Fn(f32, f32, Color)) -> bool {
+    pub(super) fn icon_button(&self, r: Rect, draw_icon: impl Fn(f32, f32, Color)) -> bool {
         let hover = !self.block_input && r.contains(Vec2::from(mouse_position()));
         rrect(r.x, r.y, r.w, r.h, 8.0, if hover { mix(BUTTON, TEXT, 0.08) } else { BUTTON });
         draw_icon(r.x + r.w / 2.0, r.y + r.h / 2.0, TEXT);
@@ -456,7 +456,7 @@ impl Launcher {
     }
 
     /// `s` shortened at the start ("...end") to fit `max_w` pixels.
-    fn fit_left(&self, s: &str, size: u16, max_w: f32) -> String {
+    pub(super) fn fit_left(&self, s: &str, size: u16, max_w: f32) -> String {
         let mut p = s.to_string();
         while self.text_width(&p, size) > max_w && p.chars().count() > 8 {
             p = format!("...{}", p.chars().skip(4).collect::<String>());

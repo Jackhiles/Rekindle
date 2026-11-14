@@ -86,7 +86,7 @@ games (also `rekindle --add FILE_OR_FOLDER`) or Steam games; the **...** menu ha
 folder. A game's own **...** menu has Add to Steam, Desktop shortcut (also `rekindle GAME --shortcut`), Mods folder,
 Open game folder and Remove from library (the files are untouched). Double-click a cover to play. Only one copy
 of a game runs at a time, and while a game started from the launcher is running, the launcher ignores the controller.
-`REKINDLE_LAUNCHER_SHOT=file.png` saves the launcher window once artwork has loaded and exits (for testing).
+`REKINDLE_LAUNCHER_SHOT=file.png` saves the launcher window once artwork has loaded and exits (for testing; `REKINDLE_LAUNCHER_PAGE=settings|steam|log` opens a page first).
 
 **Steam** (shown when Steam is installed; also `rekindle GAME --add-to-steam`) adds the game to Steam as a non-Steam
 shortcut that starts it with Rekindle, with the game's icon. If the game is or was a Steam game (installed through

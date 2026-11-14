@@ -7,6 +7,7 @@ pub mod steam;
 pub mod steam_shortcuts;
 mod art;
 pub mod update;
+mod pages;
 mod view;
 use view::Menu;
 
@@ -75,8 +76,6 @@ const BUTTON: Color = Color::new(0.16, 0.16, 0.195, 1.0);
 const MENU: Color = Color::new(0.14, 0.14, 0.17, 1.0);
 const DANGER: Color = Color::new(0.94, 0.38, 0.35, 1.0);
 
-/// Vertical step between rows of the settings panel.
-const ROW_STEP: f32 = 54.0;
 const HEADER_H: f32 = 64.0;
 /// Space kept free at the bottom of panels (toasts appear there).
 const STATUS_H: f32 = 30.0;
@@ -385,45 +384,6 @@ impl Launcher {
     }
 
     /// The play log view: newest sessions first.
-    fn draw_log(&mut self, top: f32, bottom: f32) {
-        let sw = screen_width();
-        let total: u64 = self.sessions.iter().map(|s| s.seconds).sum();
-        self.text(
-            &format!(
-                "{} session{}, {} played in total",
-                self.sessions.len(),
-                if self.sessions.len() == 1 { "" } else { "s" },
-                playlog::duration(total)
-            ),
-            24.0,
-            top + 22.0,
-            17,
-            MUTED,
-        );
-        let list_top = top + 36.0;
-        let row_h = 30.0;
-        let content_h = self.sessions.len() as f32 * row_h;
-        let max_scroll = (content_h - (bottom - list_top)).max(0.0);
-        self.scroll = (self.scroll - mouse_wheel().1 * 0.5).clamp(0.0, max_scroll);
-        if self.sessions.is_empty() {
-            self.text("Nothing yet: play a game and its session shows up here.", 24.0, list_top + 30.0, 18, MUTED);
-        }
-        for (k, s) in self.sessions.iter().rev().enumerate() {
-            let y = list_top + k as f32 * row_h - self.scroll;
-            if y < list_top - row_h || y > bottom {
-                continue;
-            }
-            if k % 2 == 0 {
-                draw_rectangle(16.0, y, sw - 32.0, row_h, CARD);
-            }
-            self.text(&s.started, 28.0, y + 20.0, 16, MUTED);
-            self.text(&s.title, 200.0, y + 20.0, 17, TEXT);
-            let d = playlog::duration(s.seconds);
-            let w = self.text_width(&d, 17);
-            self.text(&d, sw - 32.0 - w, y + 20.0, 17, TEXT);
-        }
-    }
-
     fn say(&mut self, msg: impl Into<String>) {
         self.status = Some((msg.into(), get_time() + 6.0));
     }
@@ -633,150 +593,6 @@ impl Launcher {
         self.draw_overlays(sw, sh);
     }
 
-    /// A row of mutually exclusive choices; returns the index clicked, if any.
-    fn choice_row(&self, y: f32, label: &str, hint: &str, options: &[&str], selected: usize) -> Option<usize> {
-        let x0 = 48.0;
-        self.text(label, x0, y + 23.0, 19, TEXT);
-        self.text(hint, x0, y + 46.0, 14, MUTED);
-        let mut x = 400.0;
-        let mut clicked = None;
-        for (k, o) in options.iter().enumerate() {
-            let w = self.text_width(o, 17) + 30.0;
-            if self.button(Rect::new(x, y + 6.0, w, 32.0), o, k == selected, true) {
-                clicked = Some(k);
-            }
-            x += w + 8.0;
-        }
-        clicked
-    }
-
-    fn draw_settings_panel(&mut self, top: f32, _bottom: f32) {
-        let sw = screen_width();
-        let Some((i, mut s)) = self.settings_panel.clone() else { return };
-        let title = self.entries.get(i).map(|e| e.title.clone()).unwrap_or_default();
-        draw_rectangle(16.0, top + 4.0, sw - 32.0, screen_height() - top - STATUS_H - 8.0, CARD);
-        self.text(&format!("Settings - {title}"), 36.0, top + 40.0, 24, TEXT);
-        self.text("Saved right away; applied the next time the game starts. In game: F11 fullscreen, F9 filter, F10 scaling, F1 HUD.", 36.0, top + 64.0, 14, MUTED);
-        let mut y = top + 80.0;
-        let mut changed = false;
-        let fs = match s.fullscreen {
-            None => 0,
-            Some(true) => 1,
-            Some(false) => 2,
-        };
-        if let Some(k) = self.choice_row(y, "Fullscreen", "Start in fullscreen or in a window", &["Game default", "On", "Off"], fs) {
-            s.fullscreen = [None, Some(true), Some(false)][k];
-            changed = true;
-        }
-        y += ROW_STEP;
-        if let Some(k) = self.choice_row(y, "Window size", "Size of the window when not fullscreen", &["Auto", "1x", "2x", "3x"], s.window_scale.min(3) as usize) {
-            s.window_scale = k as u8;
-            changed = true;
-        }
-        y += ROW_STEP;
-        let sc = Scaling::ALL.iter().position(|v| *v == s.scaling).unwrap_or(0);
-        if let Some(k) = self.choice_row(y, "Scaling", "Fit keeps the shape; Integer keeps pixels crisp", &["Fit", "Integer", "Stretch"], sc) {
-            s.scaling = Scaling::ALL[k];
-            changed = true;
-        }
-        y += ROW_STEP;
-        let fi = Filter::ALL.iter().position(|v| *v == s.filter).unwrap_or(1);
-        if let Some(k) = self.choice_row(y, "Upscaling", "HD for drawn art, Pixel art for pixel games", &["Sharp pixels", "Smooth", "Enhanced", "HD", "Pixel art"], fi) {
-            s.filter = Filter::ALL[k];
-            changed = true;
-        }
-        y += ROW_STEP;
-        if let Some(k) = self.choice_row(y, "Debug HUD", "Frame / tick overlay at start (F1 toggles)", &["Off", "On"], s.hud as usize) {
-            s.hud = k == 1;
-            changed = true;
-        }
-        y += ROW_STEP;
-        if let Some(k) = self.choice_row(y, "Controller", "Play with a gamepad (mapped to keys + mouse)", &["Off", "On"], s.pad as usize) {
-            s.pad = k == 1;
-            changed = true;
-        }
-        y += ROW_STEP;
-        if let Some(k) = self.choice_row(y, "Stick moves with", "Which keys the left stick / D-pad press", &["Arrow keys", "W A S D"], s.pad_wasd as usize) {
-            s.pad_wasd = k == 1;
-            changed = true;
-        }
-        y += ROW_STEP;
-        if let Some(k) = self.choice_row(y, "Cursor speed", "Right stick mouse cursor (RT / RB click)", &["Slow", "Normal", "Fast"], (s.pad_speed.clamp(1, 3) - 1) as usize) {
-            s.pad_speed = k as u8 + 1;
-            changed = true;
-        }
-        if changed {
-            s.save();
-        }
-        y += ROW_STEP;
-        self.saves_row(i, y);
-        let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
-        let close = self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape) || self.pad_back;
-        self.settings_panel = if close { None } else { Some((i, s)) };
-    }
-
-    /// Save manager row: move saves between Rekindle and the original game.
-    fn saves_row(&mut self, i: usize, y: f32) {
-        use crate::runtime::save_sync::{self, Direction};
-        let Some(entry) = self.entries.get(i).cloned() else { return };
-        let fs = crate::runtime::files::SaveFs::new(&entry.path, crate::runtime::files::save_root_for(&entry.path, &entry.title));
-        if self.saves_status.as_ref().is_none_or(|(k, _)| *k != i) {
-            self.saves_status = Some((i, save_sync::status(&fs).line()));
-            self.saves_confirm = None;
-        }
-        let hint = match self.saves_confirm {
-            Some(Direction::Import) => "Click again: replace Rekindle's saves with the original game's (a backup is kept)".to_string(),
-            Some(Direction::Export) => "Click again: replace the original game's saves with Rekindle's (a backup is kept)".to_string(),
-            None => self.saves_status.as_ref().map(|(_, s)| s.clone()).unwrap_or_default(),
-        };
-        let selected = match self.saves_confirm {
-            Some(Direction::Import) => 0,
-            Some(Direction::Export) => 1,
-            None => usize::MAX,
-        };
-        let x0 = 48.0;
-        self.text("Saves", x0, y + 23.0, 19, TEXT);
-        self.text(&hint, x0, y + 58.0, 14, MUTED);
-        let mut x = 400.0;
-        let mut clicked = None;
-        for (k, o) in ["Use original game's saves", "Copy to original game", "Open folder"].iter().enumerate() {
-            let w = self.text_width(o, 17) + 30.0;
-            if self.button(Rect::new(x, y + 6.0, w, 32.0), o, k == selected, true) {
-                clicked = Some(k);
-            }
-            x += w + 8.0;
-        }
-        let dir = match clicked {
-            Some(0) => Direction::Import,
-            Some(1) => Direction::Export,
-            Some(_) => {
-                let _ = std::fs::create_dir_all(&fs.save_root);
-                let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                let _ = std::process::Command::new(opener).arg(&fs.save_root).spawn();
-                return;
-            }
-            None => return,
-        };
-        if self.saves_confirm != Some(dir) {
-            self.saves_confirm = Some(dir);
-            return;
-        }
-        self.saves_confirm = None;
-        if self.is_running(&entry.path) {
-            self.say(format!("Close {} first, then copy its saves.", entry.title));
-            return;
-        }
-        let r = save_sync::copy(&fs, dir);
-        self.saves_status = None;
-        let what = if dir == Direction::Import { "Rekindle now uses the original game's saves" } else { "The original game now has Rekindle's saves" };
-        let backup = r.backup.map(|b| format!("; backup in {}", b.display())).unwrap_or_default();
-        if r.errors.is_empty() {
-            self.say(format!("{what}: {} copied, {} removed{backup}.", r.copied, r.removed));
-        } else {
-            self.say(format!("Copied {}, but {} failed: {}{backup}", r.copied, r.errors.len(), r.errors[0]));
-        }
-    }
-
     /// Find Fusion games in Steam and add them (linked in place, or copied to storage).
     fn scan_steam(&mut self) {
         self.steam_lines.clear();
@@ -847,70 +663,6 @@ impl Launcher {
         });
     }
 
-    fn draw_steam_confirm(&mut self, top: f32, i: usize) {
-        let sw = screen_width();
-        let title = self.entries.get(i).map(|e| e.title.clone()).unwrap_or_default();
-        draw_rectangle(16.0, top + 4.0, sw - 32.0, screen_height() - top - STATUS_H - 8.0, CARD);
-        self.bold_text(&format!("Add {title} to Steam"), 36.0, top + 40.0, 24, TEXT);
-        let lines = [
-            "Steam is running. It only reads its shortcuts when it starts, and can overwrite",
-            "changes made while it's open, so Rekindle will close Steam, add the shortcut",
-            "(with the game's Steam artwork if it has any) and start Steam again.",
-        ];
-        for (k, l) in lines.iter().enumerate() {
-            self.text(l, 36.0, top + 76.0 + k as f32 * 24.0, 17, MUTED);
-        }
-        let y = top + 76.0 + lines.len() as f32 * 24.0 + 20.0;
-        let go = Rect::new(36.0, y, 260.0, 38.0);
-        let cancel = Rect::new(go.x + go.w + 12.0, y, 120.0, 38.0);
-        if self.button(go, "Restart Steam and add", true, true) || self.pad_a || is_key_pressed(KeyCode::Enter) {
-            self.steam_confirm = None;
-            self.add_to_steam(i);
-        } else if self.button(cancel, "Cancel", false, true) || is_key_pressed(KeyCode::Escape) || self.pad_back {
-            self.steam_confirm = None;
-        }
-    }
-
-    fn draw_steam_panel(&mut self, top: f32) {
-        let sw = screen_width();
-        draw_rectangle(16.0, top + 4.0, sw - 32.0, screen_height() - top - STATUS_H - 8.0, CARD);
-        self.bold_text("Steam games", 36.0, top + 40.0, 24, TEXT);
-        self.text("Finds Clickteam Fusion games installed through Steam and adds them to the library.", 36.0, top + 64.0, 14, MUTED);
-        let idle = self.busy.is_none();
-        let mut y = top + 80.0;
-        if let Some(k) = self.choice_row(y, "Add games by", "Linking uses Steam's copy; copying keeps your own", &["Linking in place", "Copying to storage"], self.config.steam_copy as usize) {
-            self.config.steam_copy = k == 1;
-            self.config.save();
-        }
-        y += ROW_STEP;
-        self.text("Storage folder", 48.0, y + 23.0, 19, TEXT);
-        self.text("Where copied games go", 48.0, y + 46.0, 14, MUTED);
-        let shown = self.fit(&self.config.storage.display().to_string(), 15, sw - 400.0 - 160.0);
-        self.text(&shown, 400.0, y + 28.0, 15, if self.config.steam_copy { TEXT } else { MUTED });
-        if self.button(Rect::new(sw - 36.0 - 120.0, y + 6.0, 120.0, 32.0), "Choose...", false, idle) {
-            if let Some(dir) = dialogs::pick_folder() {
-                self.config.storage = dir;
-                self.config.save();
-            }
-        }
-        y += ROW_STEP + 8.0;
-        if self.button(Rect::new(48.0, y, 300.0, 38.0), "Find Clickteam games in Steam", true, idle) {
-            self.scan_steam();
-        }
-        y += 56.0;
-        for (k, line) in self.steam_lines.iter().enumerate() {
-            let ly = y + k as f32 * 22.0;
-            if ly > screen_height() - STATUS_H - 20.0 {
-                break;
-            }
-            self.text(line, 48.0, ly, 16, TEXT);
-        }
-        let done = Rect::new(sw - 36.0 - 120.0, top + 20.0, 120.0, 36.0);
-        if self.button(done, "Done", true, true) || is_key_pressed(KeyCode::Escape) || self.pad_back {
-            self.steam_panel = false;
-        }
-    }
-
     /// On start: make sure Steam has a shortcut to Rekindle. Added quietly when Steam is
     /// closed; when it's open (adding means restarting it) the status bar asks first.
     fn check_steam_shortcut(&self) {
@@ -929,42 +681,6 @@ impl Launcher {
             }
         });
     }
-
-    fn draw_steam_offer(&mut self, sh: f32) {
-        let y = sh - STATUS_H + 2.0;
-        let msg = "Add Rekindle to Steam? (Steam restarts)";
-        self.text(msg, 20.0, sh - 10.0, 16, TEXT);
-        let mut x = 20.0 + self.text_width(msg, 16) + 14.0;
-        let mut clicked = None;
-        for (k, (label, accent)) in [("Add", true), ("Not now", false), ("Don't ask again", false)].into_iter().enumerate() {
-            let w = self.text_width(label, 16) + 26.0;
-            if self.button(Rect::new(x, y, w, STATUS_H - 4.0), label, accent, true) {
-                clicked = Some(k);
-            }
-            x += w + 8.0;
-        }
-        match clicked {
-            Some(0) => {
-                self.steam_offer = false;
-                self.busy = Some("Adding Rekindle to Steam...".into());
-                let tx = self.tx.clone();
-                std::thread::spawn(move || {
-                    let progress = |s: &str| {
-                        let _ = tx.send(Msg::Status(s.to_string()));
-                    };
-                    let msg = steam_shortcuts::add_launcher(true, progress).unwrap_or_else(|e| format!("Could not add Rekindle to Steam: {e}"));
-                    let _ = tx.send(Msg::Done(msg));
-                });
-            }
-            Some(1) => self.steam_offer = false,
-            Some(_) => {
-                self.steam_offer = false;
-                self.config.steam_self_never = true;
-                self.config.save();
-            }
-            None => {}
-        }
-    }
 }
 
 pub async fn run() {
@@ -972,10 +688,17 @@ pub async fn run() {
     l.start_update_check();
     l.check_steam_shortcut();
     // Testing: REKINDLE_LAUNCHER_SHOT=<file.png> saves the window once artwork has loaded
-    // (or after 20 s), then exits. REKINDLE_LAUNCHER_SELECT=<n> selects the n-th game.
+    // (or after 20 s), then exits. REKINDLE_LAUNCHER_SELECT=<n> selects the n-th game,
+    // REKINDLE_LAUNCHER_PAGE=settings|steam|log opens that page.
     let shot = std::env::var_os("REKINDLE_LAUNCHER_SHOT").map(PathBuf::from);
     if let Some(n) = std::env::var("REKINDLE_LAUNCHER_SELECT").ok().and_then(|v| v.parse::<usize>().ok()) {
         l.selected = Some(n);
+    }
+    match std::env::var("REKINDLE_LAUNCHER_PAGE").as_deref() {
+        Ok("settings") if !l.entries.is_empty() => l.game_action(l.selected.unwrap_or(0).min(l.entries.len() - 1), view::ACT_SETTINGS),
+        Ok("steam") => l.steam_panel = true,
+        Ok("log") => l.show_log = true,
+        _ => {}
     }
     let started = get_time();
     loop {
