@@ -96,7 +96,8 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
         match cmd {
             "game" => {
                 let game = GameData::load(dir.join(rest))?;
-                let rt = Runtime::with_save_root(game, start_frame, Some(save_root.clone()));
+                let mut rt = Runtime::with_save_root(game, start_frame, Some(save_root.clone()));
+                rt.files.isolated = true;
                 driver = Some(Driver { rt, tick: 0, script: InputScript::default(), last_mouse: (0.0, 0.0), save_root: save_root.clone() });
             }
             // `saves DIR` (before `game`): start from a copy of a save folder (a Rekindle

@@ -155,6 +155,8 @@ pub struct EventState {
     pub restrict_until: f64,
     /// Next fire time for "every" conditions, keyed by condition index.
     pub every_next: HashMap<usize, f64>,
+    /// "Every" conditions: (ms left, unused, tick last counted down).
+    pub after: HashMap<usize, (f64, u32, u64)>,
     /// Instance-id pairs that were colliding last time, keyed by condition index.
     pub collisions: HashMap<usize, HashSet<(u32, u32)>>,
 }
@@ -634,15 +636,27 @@ impl Runtime {
                 let t = self.eval_param(c, 0, sel, None).as_f64();
                 self.prev_timer_ms < t && t <= self.timer_ms || (self.tick == 0 && t <= 0.0)
             }
+            // "Every X": like the original runtime, the countdown only runs while the event
+            // reaches this condition (its earlier conditions are true), one step per tick.
+            // So "won and every 3 s" fires 3 s after the win, not 3 s after the frame began.
             (TIMER, -4) | (TIMER, -8) => {
-                let ms = self.eval_param(c, 0, sel, None).as_f64().max(1.0);
-                let now = self.timer_ms;
+                let ms = match c.params.first().map(|p| &p.value) {
+                    Some(Param::Time { ms, .. }) => *ms as f64,
+                    _ => self.eval_param(c, 0, sel, None).as_f64(),
+                }
+                .max(1.0);
+                let dt = 1000.0 / self.frame_rate.max(1) as f64;
+                let tick = self.tick;
                 let st = self.event_state.entry(gi).or_default();
-                let next = st.every_next.entry(ci).or_insert(ms);
-                if now >= *next {
-                    *next += ms;
-                    if *next <= now {
-                        *next = now + ms;
+                let e = st.after.entry(ci).or_insert((ms, 0, u64::MAX));
+                if e.2 != tick {
+                    e.2 = tick;
+                    e.0 -= dt;
+                }
+                if e.0 <= 0.0 {
+                    e.0 += ms;
+                    if e.0 <= 0.0 {
+                        e.0 = ms;
                     }
                     true
                 } else {

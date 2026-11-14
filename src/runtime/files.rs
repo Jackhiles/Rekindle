@@ -17,6 +17,9 @@ pub struct SaveFs {
     pub save_root: PathBuf,
     /// The real roaming AppData folder (Windows), used to map AppData paths.
     pub appdata: Option<PathBuf>,
+    /// Tests: never read the player's real AppData files (saves made outside the sandbox),
+    /// only the sandbox and the game's own folder.
+    pub isolated: bool,
 }
 
 fn norm(p: &str) -> String {
@@ -81,6 +84,7 @@ impl SaveFs {
             app_dir,
             save_root,
             appdata,
+            isolated: false,
         }
     }
 
@@ -151,7 +155,12 @@ impl SaveFs {
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(self.sandboxed(path))
             .ok()
-            .or_else(|| std::fs::read(self.real(path)).ok())
+            .or_else(|| self.real_allowed(path).then(|| std::fs::read(self.real(path)).ok()).flatten())
+    }
+
+    /// May the real location of `path` be read? (Not AppData when isolated.)
+    fn real_allowed(&self, path: &str) -> bool {
+        !self.isolated || self.appdata.as_ref().is_none_or(|a| !self.real(path).starts_with(a))
     }
 
     pub fn write(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
@@ -163,7 +172,7 @@ impl SaveFs {
     }
 
     pub fn exists(&self, path: &str) -> bool {
-        self.sandboxed(path).is_file() || self.real(path).is_file()
+        self.sandboxed(path).is_file() || (self.real_allowed(path) && self.real(path).is_file())
     }
 
     /// Deletes only the sandboxed copy; original game files are never touched.
