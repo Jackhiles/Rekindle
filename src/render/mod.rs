@@ -861,7 +861,8 @@ impl Viewer {
         if is_key_pressed(KeyCode::F4) {
             self.inspector = !self.inspector;
         }
-        if is_key_pressed(KeyCode::F12) {
+        // Ctrl+F12: games use F12 themselves.
+        if ctrl && is_key_pressed(KeyCode::F12) {
             self.screenshot_requested = true;
         }
         if ctrl && is_key_pressed(KeyCode::M) {
@@ -1759,7 +1760,8 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         v.advance();
         let t1 = std::time::Instant::now();
         v.audio.process(&mut v.rt).await;
-        show_mouse((v.rt.cursor_visible && v.rt.cursor_object.is_none()) || !v.running);
+        let game_cursor = v.rt.cursor_object.is_some() || v.rt.has_mouse_cursor_object();
+        show_mouse((v.rt.cursor_visible && !game_cursor) || !v.running);
         let t2 = std::time::Instant::now();
         v.draw();
         let t3 = std::time::Instant::now();

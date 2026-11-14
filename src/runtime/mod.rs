@@ -999,6 +999,24 @@ impl Runtime {
     }
 
     /// Image (handle) of the object used as the mouse pointer, if any.
+    /// A visible object moved by the mouse over most of the screen is on screen: the game
+    /// draws its own pointer with it, so the system pointer is hidden.
+    pub fn has_mouse_cursor_object(&self) -> bool {
+        use crate::ctf_loader::properties::MovementKind;
+        self.instances.iter().any(|i| {
+            !i.destroyed
+                && i.visible
+                && self.game.object(i.oi).is_some_and(|o| match &o.props {
+                    ObjectProperties::Common(c) => {
+                        // A pointer roams most of the screen; small areas are wobble effects.
+                        matches!(c.movements.get(i.movement.index).map(|m| &m.kind),
+                            Some(MovementKind::Mouse { x1, x2, y1, y2 }) if x2 - x1 >= 300 && y2 - y1 >= 200)
+                    }
+                    _ => false,
+                })
+        })
+    }
+
     pub fn cursor_image(&self) -> Option<u32> {
         let name = self.cursor_object.as_ref()?;
         self.instances.iter().filter(|i| !i.destroyed).find_map(|i| {

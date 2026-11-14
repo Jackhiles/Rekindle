@@ -248,7 +248,7 @@ impl Viewer {
             ("F9", "filter"),
             ("F10", "scaling"),
             ("F11", "fullscreen"),
-            ("F12", "screenshot"),
+            ("Ctrl F12", "screenshot"),
             ("Ctrl -/=", "speed"),
             ("Ctrl M", "mute"),
         ];

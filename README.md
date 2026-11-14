@@ -172,7 +172,7 @@ Many games cover a frame with a fade or transition object that events remove. Wh
 | F11 or Alt+Enter | fullscreen / window |
 | Ctrl+PgUp / Ctrl+PgDn | previous / next frame |
 | Ctrl+1 ... Ctrl+0 | toggle layers 1-10 |
-| F12 | screenshot (`%APPDATA%\Rekindle\screenshots\`) |
+| Ctrl+F12 | screenshot (`%APPDATA%\Rekindle\screenshots\`) |
 | Ctrl+- / Ctrl+= | game speed x0.25 ... x4 |
 | Ctrl+M | mute / unmute |
 | Ctrl+Q | quit (all other keys go to the game) |

@@ -724,9 +724,22 @@ impl Runtime {
                 } else {
                     &input.down
                 };
+                // Like the original runtime, the left and right mouse buttons also work as
+                // fire 1 and fire 2 (games click their buttons through "fire 1").
+                let mouse = |button: usize, vk: u16| {
+                    if c.num == -4 {
+                        input.clicked.get(button).copied().unwrap_or(false)
+                    } else {
+                        input.down.contains(&vk)
+                    }
+                };
                 (0..8)
                     .filter(|b| mask & (1 << b) != 0)
-                    .all(|b| set.contains(&keys[b]))
+                    .all(|b| {
+                        set.contains(&keys[b])
+                            || (b == 4 && mouse(0, 1))
+                            || (b == 5 && mouse(2, 2))
+                    })
                     && mask != 0
             }
             (PLAYER, -2) => {
