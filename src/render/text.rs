@@ -117,6 +117,12 @@ impl Fonts {
         Some(f)
     }
 
+    /// A font by face name only if it is installed (no substitute).
+    pub fn installed(&mut self, face: &str) -> Option<Font> {
+        find_font_file(face, false, false)?;
+        self.by_face(face, false)
+    }
+
     /// (font, pixel height) for a bank font handle.
     pub fn get(&mut self, g: &GameData, handle: Option<u32>) -> (Option<Font>, f32) {
         let Some(h) = handle else { return (None, 16.0) };

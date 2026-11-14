@@ -243,6 +243,13 @@ impl AudioOut {
         if self.failed.contains(&handle) {
             return;
         }
+        if let Some(bytes) = rt.file_sound(handle) {
+            let (out, rx) = sync_channel(AHEAD);
+            self.with_mix(|m| m.voices.push(Voice { handle, rx, buf: Vec::new(), pos: 0, volume, pan }));
+            let (report, rate) = (self.tx.clone(), self.rate);
+            std::thread::spawn(move || feed(handle, bytes, rate, start_ms, looped, out, report));
+            return;
+        }
         let Some(entry) = rt.game.sounds.get(handle).cloned() else { return };
         let replacement = self.mods.sound(handle);
         let (out, rx) = sync_channel(AHEAD);

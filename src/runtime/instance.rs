@@ -90,6 +90,7 @@ pub struct Instance {
     pub pasted: bool,
     pub text_color: Option<[u8; 4]>,
     pub font_size: Option<f32>,
+    pub font_face: Option<String>,
     /// "Follow the frame" is off: the position is in screen coordinates and ignores scrolling.
     pub fixed: bool,
     /// Windows-control extensions (edit box, list, button, combo box).
@@ -171,6 +172,7 @@ impl Instance {
             pasted: false,
             text_color: None,
             font_size: None,
+            font_face: None,
             fixed: false,
             widget: None,
         };

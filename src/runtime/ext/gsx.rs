@@ -4,7 +4,7 @@
 //! values are compared with) and from a save file it wrote:
 //! condition 0: compare value(index) with a value;
 //! actions 0 set (index, value), 3 add (index, value), 6 subtract (index, value),
-//! 8 set range (from, to, value), 10 clear all, 29 save to file, 30 and 33 load from file;
+//! 8 set range (from, to, value), 10 clear all, 26 and 29 save to file, 30 and 33 load from file;
 //! expression 0: value(index).
 //!
 //! File layout (little-endian): `u16 3`, then four sections of `u32 count, u8 flag`;
@@ -111,7 +111,8 @@ impl Extension for GlobalStore {
                 }
             }
             10 => self.values.borrow_mut().iter_mut().for_each(|v| *v = 0),
-            29 => {
+            // 26 and 29: save to file (26 runs on leaving a screen, 29 at frame changes).
+            26 | 29 => {
                 let path = arg_s(args, 0);
                 if let Err(e) = fs.write(&path, &self.encode()) {
                     eprintln!("global store: cannot write {path}: {e}");

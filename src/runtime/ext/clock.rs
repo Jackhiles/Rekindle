@@ -26,9 +26,9 @@ impl Extension for Clock {
     }
 
     fn action(&mut self, idx: usize, _args: &[Value], _fs: &SaveFs) -> bool {
-        // 8 / 9 are called together at frame start with no parameters: the stopwatch
-        // reset / start actions. Nothing reads the stopwatch, so they need no state.
-        matches!(idx, 8 | 9)
+        // 8 / 9 / 10: stopwatch reset / start / stop (8 and 9 run together at frame start,
+        // 10 when a round ends). Nothing reads the stopwatch, so they need no state.
+        matches!(idx, 8..=10)
     }
 
     fn expression(&self, idx: usize, _args: &[Value], _fs: &SaveFs) -> Option<Value> {

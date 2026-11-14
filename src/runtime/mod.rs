@@ -166,6 +166,9 @@ struct GlobalObjectState {
     text: String,
 }
 
+/// Sound handles at or above this are sound files played by path.
+pub const FILE_SOUND_BASE: u32 = 0x4000_0000;
+
 pub struct Runtime {
     pub game: GameData,
     pub frame_index: usize,
@@ -208,6 +211,8 @@ pub struct Runtime {
     platformers: HashSet<u32>,
     /// Conditions/actions/expressions encountered but not implemented, with hit counts.
     pub unimplemented: RefCell<BTreeMap<String, u64>>,
+    /// Sound files played by name ("play sample file"): handle FILE_SOUND_BASE + index.
+    pub file_sounds: Vec<(String, std::sync::Arc<[u8]>)>,
     /// Frames entered, in order (for diagnostics).
     pub frame_log: Vec<usize>,
     /// Sandboxed file access for saves.
@@ -305,6 +310,7 @@ impl Runtime {
             bullets: HashSet::default(),
             platformers: HashSet::default(),
             unimplemented: RefCell::new(BTreeMap::new()),
+            file_sounds: Vec::new(),
             frame_log: Vec::new(),
             files,
             exts: HashMap::default(),
@@ -833,7 +839,33 @@ impl Runtime {
     }
 
     /// Play a bank sample (estimating its length if the backend hasn't reported one yet).
+    /// The pseudo sound handle for a sound file the game plays by path (read through the
+    /// files layer, so relative paths are the game's folder). None if it cannot be read.
+    pub fn file_sound_handle(&mut self, path: &str) -> Option<u32> {
+        if let Some(i) = self.file_sounds.iter().position(|(p, _)| p.eq_ignore_ascii_case(path)) {
+            return Some(FILE_SOUND_BASE + i as u32);
+        }
+        let bytes = self.files.read(path)?;
+        let ms = crate::audio::estimate_duration_ms(&bytes).unwrap_or(1000.0);
+        let handle = FILE_SOUND_BASE + self.file_sounds.len() as u32;
+        self.file_sounds.push((path.to_string(), bytes.into()));
+        self.audio.durations.insert(handle, ms);
+        Some(handle)
+    }
+
+    /// Bytes of a sound played from a file (see `file_sound_handle`).
+    pub fn file_sound(&self, handle: u32) -> Option<std::sync::Arc<[u8]>> {
+        let i = handle.checked_sub(FILE_SOUND_BASE)? as usize;
+        self.file_sounds.get(i).map(|(_, b)| b.clone())
+    }
+
     pub fn play_sample(&mut self, handle: u32, channel: Option<usize>, loops: u32) {
+        if handle >= FILE_SOUND_BASE {
+            if self.file_sound(handle).is_some() {
+                self.audio.play(handle, channel, loops);
+            }
+            return;
+        }
         if self.game.sounds.get(handle).is_none() {
             return;
         }
@@ -1096,6 +1128,7 @@ impl Runtime {
                         .unwrap_or(p.map_or([0, 0, 0, 255], |p| p.color)),
                     flags: p.map_or(0, |p| p.flags),
                     size: inst.font_size,
+                    face: inst.font_face.clone(),
                 },
                 0.0,
                 0.0,
@@ -1179,6 +1212,7 @@ impl Runtime {
                         color: inst.text_color.unwrap_or(color),
                         flags: paragraph_flags::RIGHT | paragraph_flags::BOTTOM,
                         size: inst.font_size,
+                        face: inst.font_face.clone(),
                     },
                     -w,
                     -h,

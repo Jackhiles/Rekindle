@@ -247,6 +247,12 @@ impl<'a> Eval<'a> {
                 7 => Value::Int(rt.frame().height),
                 0 | 8 => Value::Int(rt.frame_index as i32 + 1),
                 10 => Value::Int(rt.frame_rate as i32),
+                // Virtual width / height: the scrollable area (the frame size unless set).
+                11 | 12 => {
+                    let f = rt.frame();
+                    let (w, h) = f.virtual_rect.map_or((f.width, f.height), |r| (r[2] - r[0], r[3] - r[1]));
+                    Value::Int(if t.num == 11 { w } else { h })
+                }
                 n => rt.note_unimplemented(format!("expr -3/{n}"), Value::Int(0)),
             },
             -4 => {

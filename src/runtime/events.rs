@@ -1206,6 +1206,9 @@ impl Runtime {
             (GAME, 16) => {
                 self.frame_rate = self.eval_param(a, 0, sel, None).as_i32().clamp(1, 1000) as u32
             }
+            // Parameterless display options (vsync / window mode): the viewer's own
+            // settings decide those.
+            (GAME, 19) | (GAME, 20) => {}
             (GAME, 23) => {
                 if let Some(Param::Colour(c)) = a.params.first().map(|p| &p.value) {
                     self.background_color = *c;
@@ -1318,6 +1321,18 @@ impl Runtime {
                 }
             }
             24 | 25 => self.audio.set_paused(|_, _| true, n == 24),
+            // Play a sound file on a channel (28), or loop it (29; 0 loops = forever).
+            28 | 29 => {
+                let path = self.eval_param(a, 0, sel, None).as_string();
+                if let Some(h) = self.file_sound_handle(&path) {
+                    let ch = int(self, 1).clamp(1, audio::CHANNELS as i32) as usize;
+                    let loops = if n == 29 { int(self, 2).max(0) as u32 } else { 1 };
+                    self.play_sample(h, Some(ch), loops);
+                }
+            }
+            // Lock / unlock a channel: keeps automatic channel choice off it. Sounds played
+            // without a channel never take one here, so there is nothing to reserve.
+            30 | 31 => {}
             // Music bank (MIDI) and playback frequency are not supported.
             2 | 3 | 5 | 9 | 10 | 32 | 33 => {}
             16 => {
@@ -1385,15 +1400,21 @@ impl Runtime {
         let cur = Some((a.object_info, idx));
         let kind = self.instances[idx].kind;
         if a.num >= 80 && matches!(self.instances[idx].visual, Visual::Effect { .. }) {
-            // Perspective object. 80 = set zoom (verified). The parameterless pairs are
-            // inferred from use: 81 / 96 pick the sine-wave / sine-offset effect,
-            // 87 / 88 pick horizontal / vertical.
-            let zoom = (a.num == 80).then(|| self.eval_param(a, 0, sel, cur).as_f64() as f32);
+            // Perspective object, inferred from use and the object's stored settings:
+            // 80 set zoom (verified); 81-84 pick the effect in stored order (panorama,
+            // perspective, sine wave, sine offset; 81 restores an object that starts as a
+            // panorama at the same zoom, 83 is followed by a wave count); 85 wave count,
+            // 86 offset; 87 / 88 horizontal / vertical. (81 is also what a game's office view
+            // switches to at start, and offices use the panorama effect.)
+            let value = matches!(a.num, 80 | 85 | 86).then(|| self.eval_param(a, 0, sel, cur).as_f64() as f32);
             let mut handled = true;
             if let Visual::Effect { params, .. } = &mut self.instances[idx].visual {
                 match a.num {
-                    80 => params.zoom = zoom.unwrap_or(params.zoom),
-                    81 => params.effect = 2,
+                    80 => params.zoom = value.unwrap_or(params.zoom),
+                    81..=84 => params.effect = (a.num - 81) as u8,
+                    85 => params.waves = value.unwrap_or(params.waves),
+                    86 => params.offset = value.unwrap_or(params.offset),
+                    // Unverified (two office states in one game): kept as sine offset.
                     96 => params.effect = 3,
                     87 => params.vertical = false,
                     88 => params.vertical = true,
@@ -1672,6 +1693,10 @@ impl Runtime {
                     }
                 }
             }
+            (_, 50) => {
+                let face = self.eval_param(a, 0, sel, cur).as_string();
+                self.instances[idx].font_face = (!face.trim().is_empty()).then_some(face);
+            }
             (_, 51) => {
                 self.instances[idx].font_size =
                     Some(self.eval_param(a, 0, sel, cur).as_f64().abs().max(1.0) as f32)
@@ -1746,7 +1771,7 @@ impl Runtime {
             }
             (ObjectKind::Text, 80) => self.instances[idx].text.clear(),
             // Display paragraph N (the paragraph parameter, as 1.5 data stores it).
-            (ObjectKind::Text, 84) if matches!(a.params.first().map(|p| &p.value), Some(Param::Short(_))) => {
+            (ObjectKind::Text, 84) => {
                 let n = self.param_index(a, 0, sel, cur);
                 if let Some(ObjectProperties::Common(c)) = self.game.object(self.instances[idx].oi).map(|o| &o.props) {
                     if let Some(p) = c.text.as_ref().and_then(|t| t.paragraphs.get(n)) {

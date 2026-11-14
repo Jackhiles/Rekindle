@@ -170,13 +170,30 @@ pub fn print_info(g: &GameData, verbose: bool) {
                 }
                 _ => String::new(),
             };
+            // Text objects: paragraph count and the first few paragraphs.
+            let paras = match &o.props {
+                rekindle::ctf_loader::properties::ObjectProperties::Common(c) => c.text.as_ref().map_or(String::new(), |t| {
+                    let first: Vec<String> = t.paragraphs.iter().take(if std::env::var_os("REKINDLE_ALL_PARAS").is_some() { usize::MAX } else { 4 }).map(|p| format!("{:?}", p.text.chars().take(16).collect::<String>())).collect();
+                    format!("  [{} paragraphs: {}]", t.paragraphs.len(), first.join(", "))
+                }),
+                _ => String::new(),
+            };
+            // REKINDLE_EXT_DATA=1: an extension object's stored settings, in hex.
+            let paras = match &o.props {
+                rekindle::ctf_loader::properties::ObjectProperties::Common(c) if std::env::var_os("REKINDLE_EXT_DATA").is_some() => {
+                    let hex: Vec<String> = c.extension_data.iter().flatten().take(64).map(|b| format!("{b:02x}")).collect();
+                    if hex.is_empty() { paras } else { format!("{paras}  data {}", hex.join(" ")) }
+                }
+                _ => paras,
+            };
             println!(
-                "    #{:<5} {:<18} {}{}{}",
+                "    #{:<5} {:<18} {}{}{}{}",
                 o.handle,
                 o.kind.label(),
                 o.name,
                 ext,
-                moves
+                moves,
+                paras
             );
         }
     }
