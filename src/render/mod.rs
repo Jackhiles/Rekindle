@@ -471,8 +471,21 @@ void main() {
     gl_FragColor = vec4(1.0 - t.rgb, t.a) * color;
 }"#;
 
+/// Monochrome: the image in grey (average of the channels), tinted and faded as usual.
+const INK_MONO_FS: &str = r#"#version 100
+precision mediump float;
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    vec4 t = texture2D(Texture, uv);
+    float g = (t.r + t.g + t.b) / 3.0;
+    gl_FragColor = vec4(g, g, g, t.a) * color;
+}"#;
+
 /// Ink effect ids.
 const INK_INVERT: u16 = 2;
+const INK_MONO: u16 = 10;
 const INK_XOR: u16 = 3;
 const INK_AND: u16 = 4;
 const INK_OR: u16 = 5;
@@ -483,6 +496,7 @@ struct InkMaterials {
     add: Option<Material>,
     subtract: Option<Material>,
     invert: Option<Material>,
+    mono: Option<Material>,
     and: Option<Material>,
     or: Option<Material>,
     xor: Option<Material>,
@@ -507,6 +521,7 @@ impl InkMaterials {
             add: make(SPRITE_FS, BlendState::new(Equation::Add, Value(BlendValue::SourceAlpha), One)),
             subtract: make(SPRITE_FS, BlendState::new(Equation::ReverseSubtract, Value(BlendValue::SourceAlpha), One)),
             invert: make(INK_INVERT_FS, alpha),
+            mono: make(INK_MONO_FS, alpha),
             and: make(INK_AND_FS, BlendState::new(Equation::Add, Value(BlendValue::DestinationColor), Zero)),
             or: make(INK_PREMUL_FS, BlendState::new(Equation::Add, One, OneMinusValue(BlendValue::SourceColor))),
             xor: make(
@@ -521,6 +536,7 @@ impl InkMaterials {
             INK_ADD => self.add.as_ref(),
             INK_SUBTRACT => self.subtract.as_ref(),
             INK_INVERT => self.invert.as_ref(),
+            INK_MONO => self.mono.as_ref(),
             INK_AND => self.and.as_ref(),
             INK_OR => self.or.as_ref(),
             INK_XOR => self.xor.as_ref(),
@@ -1700,7 +1716,9 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         eprintln!("game has no frames to display");
         return;
     }
-    let rt = Runtime::with_save_root(game, opts.start_frame, opts.save_dir.clone());
+    let mut rt = Runtime::with_save_root(game, opts.start_frame, opts.save_dir.clone());
+    // Screenshot / scripted runs are tests: start from no saves, not the player's real ones.
+    rt.files.isolated = opts.screenshot.is_some();
     let save_root = rt.files.save_root.clone();
     let mut v = Viewer {
         last_window_mouse: None,

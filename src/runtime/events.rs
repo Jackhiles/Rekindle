@@ -1668,7 +1668,28 @@ impl Runtime {
                 let max = self.frame().layers.len().saturating_sub(1);
                 self.instances[idx].layer = l.min(max);
             }
-            (_, 63) | (_, 64) => {} // shaders: not supported
+            // Set effect by name: Fusion's built-in effects; shader files (.fx) aren't run.
+            (_, 63) => {
+                let name = self.eval_param(a, 0, sel, cur).as_string();
+                let effect = match name.trim().to_ascii_lowercase().as_str() {
+                    "" | "none" | "blend" => Some(0),
+                    "semi-transparent" => Some(1),
+                    "inverted" | "invert" => Some(2),
+                    "xor" => Some(3),
+                    "and" => Some(4),
+                    "or" => Some(5),
+                    "add" => Some(9),
+                    "mono" | "monochrome" => Some(10),
+                    "subtract" | "sub" => Some(11),
+                    _ => None,
+                };
+                match effect {
+                    Some(e) => self.instances[idx].ink_effect = e,
+                    None => self.note_unimplemented(format!("effect {name}"), ()),
+                }
+            }
+            // Shader parameters (only for .fx effects).
+            (_, 64) => {}
             (_, 11) | (_, 12) | (_, 13) => {
                 let count =
                     self.game

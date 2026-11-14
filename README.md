@@ -204,7 +204,7 @@ Run them with `rekindle --scenario FILE_OR_DIR`, or as part of `cargo test` by s
 Debug environment variables: `REKINDLE_PROFILE=1` makes `--headless` print the slowest events;
 `REKINDLE_NO_EFFECTS=1` disables distortion effects for comparison. `REKINDLE_TRACE=N` prints each condition result of event N every tick.
 `REKINDLE_HUD=compact|full|inspect` shows the overlay (also in screenshots). `REKINDLE_WALK_FRAMES=MS` shows every frame for MS milliseconds and exits (a memory benchmark; not logged as play time).
-`REKINDLE_SETTINGS="filter=hd;window_scale=2"` overrides player settings for one run (also screenshots). With `--dump-info --verbose`, `REKINDLE_ALL_PARAS=1` lists every paragraph of text objects and `REKINDLE_EXT_DATA=1` prints each extension object's stored settings in hex; with `--dump-events`, `REKINDLE_FULL_PARAMS=1` prints parameters in full.
+`REKINDLE_SETTINGS="filter=hd;window_scale=2"` overrides player settings for one run (also screenshots). With `--dump-info --verbose`, `REKINDLE_ALL_PARAS=1` lists every paragraph of text objects and `REKINDLE_EXT_DATA=1` prints each extension object's stored settings in hex and `REKINDLE_ANIMS=1` lists each object's animations; with `--dump-events`, `REKINDLE_FULL_PARAMS=1` prints parameters in full.
 `REKINDLE_TEXTURE_MB=N` changes the texture cache budget (default 192 MB): textures are kept in a least-recently-used
 cache, and whatever the current frame draws is never dropped.
 

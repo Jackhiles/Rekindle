@@ -178,6 +178,19 @@ pub fn print_info(g: &GameData, verbose: bool) {
                 }),
                 _ => String::new(),
             };
+            // REKINDLE_ANIMS=1: which animations an object has (index:frames of first direction).
+            let paras = match &o.props {
+                rekindle::ctf_loader::properties::ObjectProperties::Common(c) if std::env::var_os("REKINDLE_ANIMS").is_some() && !c.animations.is_empty() => {
+                    let list: Vec<String> = c
+                        .animations
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(k, a)| a.as_ref().map(|a| format!("{k}:{}", a.directions.iter().flatten().next().map_or(0, |d| d.frames.len()))))
+                        .collect();
+                    format!("{paras}  anims [{}]", list.join(" "))
+                }
+                _ => paras,
+            };
             // REKINDLE_EXT_DATA=1: an extension object's stored settings, in hex.
             let paras = match &o.props {
                 rekindle::ctf_loader::properties::ObjectProperties::Common(c) if std::env::var_os("REKINDLE_EXT_DATA").is_some() => {
@@ -399,7 +412,7 @@ pub fn print_audit(g: &GameData) {
     let mut inks: BTreeMap<u16, usize> = BTreeMap::new();
     for o in &g.objects {
         let e = o.ink().effect;
-        if !matches!(e, 0 | 1 | 2 | 3 | 4 | 5 | 9 | 11) {
+        if !matches!(e, 0 | 1 | 2 | 3 | 4 | 5 | 9 | 10 | 11) {
             *inks.entry(e).or_insert(0) += 1;
         }
     }
