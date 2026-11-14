@@ -30,6 +30,8 @@ struct Voice {
 #[derive(Default)]
 struct Mix {
     voices: Vec<Voice>,
+    /// Ctrl+M in the viewer: mix silence (sounds keep their place).
+    muted: bool,
     /// The mixed stereo frames of the current callback.
     scratch: Vec<f32>,
 }
@@ -118,6 +120,9 @@ where
             let frames = data.len() / ch;
             let Ok(mut m) = mix.lock() else { return };
             m.render(frames);
+            if m.muted {
+                m.scratch.iter_mut().for_each(|s| *s = 0.0);
+            }
             for (f, out) in data.chunks_exact_mut(ch).enumerate() {
                 let (l, r) = (m.scratch[f * 2].clamp(-1.0, 1.0), m.scratch[f * 2 + 1].clamp(-1.0, 1.0));
                 if ch == 1 {
@@ -212,6 +217,19 @@ impl AudioOut {
             (None, crate::audio::OUTPUT_RATE)
         };
         Self { mix, enabled: stream.is_some(), stream, rate, tx, rx, failed: HashSet::new(), mods: Default::default() }
+    }
+
+    pub fn muted(&self) -> bool {
+        self.mix.lock().is_ok_and(|m| m.muted)
+    }
+
+    pub fn set_muted(&self, on: bool) {
+        self.with_mix(|m| m.muted = on);
+    }
+
+    /// Sounds currently playing.
+    pub fn voices(&self) -> usize {
+        self.mix.lock().map_or(0, |m| m.voices.len())
     }
 
     fn with_mix(&self, f: impl FnOnce(&mut Mix)) {

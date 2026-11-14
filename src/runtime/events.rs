@@ -340,6 +340,18 @@ impl Runtime {
         (x, y)
     }
 
+    /// The topmost visible object (not a backdrop) whose solid pixels or box contain the frame
+    /// point, for the viewer's inspector.
+    pub fn object_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.instances
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| !i.destroyed && !i.background && i.visible)
+            .filter(|(k, _)| self.mouse_over(*k, x, y))
+            .max_by_key(|(k, i)| (i.layer, i.z, *k))
+            .map(|(k, _)| k)
+    }
+
     /// Mouse over an object: its solid pixels (or its box, for box-collision objects), like
     /// the original runtime.
     pub(super) fn mouse_over(&self, idx: usize, x: f64, y: f64) -> bool {

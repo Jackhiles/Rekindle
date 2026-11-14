@@ -162,15 +162,19 @@ Many games cover a frame with a fade or transition object that events remove. Wh
 
 | Key | Action |
 |---|---|
-| F1 | HUD (frame, tick, timer, unimplemented features) |
+| F1 | overlay: off, compact (fps, frame, state) or full (game, performance with a frame-time graph, view, layers, unsupported features, keys) |
 | F2 | pause / resume the game (paused: arrows / drag scroll freely) |
 | F3 | single tick while paused |
+| F4 | inspector: name, position, size, animation, values, strings and flags of the object under the mouse |
 | F5 | restart frame |
 | F6 / F7 / F8 | bounding boxes / show hidden objects / fit whole frame |
 | F9 / F10 | upscaling filter / scaling mode |
 | F11 or Alt+Enter | fullscreen / window |
 | Ctrl+PgUp / Ctrl+PgDn | previous / next frame |
 | Ctrl+1 ... Ctrl+0 | toggle layers 1-10 |
+| F12 | screenshot (`%APPDATA%\Rekindle\screenshots\`) |
+| Ctrl+- / Ctrl+= | game speed x0.25 ... x4 |
+| Ctrl+M | mute / unmute |
 | Ctrl+Q | quit (all other keys go to the game) |
 
 ### Regression scenarios
@@ -193,7 +197,7 @@ Run them with `rekindle --scenario FILE_OR_DIR`, or as part of `cargo test` by s
 
 Debug environment variables: `REKINDLE_PROFILE=1` makes `--headless` print the slowest events;
 `REKINDLE_NO_EFFECTS=1` disables distortion effects for comparison. `REKINDLE_TRACE=N` prints each condition result of event N every tick.
-`REKINDLE_WALK_FRAMES=MS` shows every frame for MS milliseconds and exits (a memory benchmark; not logged as play time).
+`REKINDLE_HUD=compact|full|inspect` shows the overlay (also in screenshots). `REKINDLE_WALK_FRAMES=MS` shows every frame for MS milliseconds and exits (a memory benchmark; not logged as play time).
 `REKINDLE_TEXTURE_MB=N` changes the texture cache budget (default 192 MB): textures are kept in a least-recently-used
 cache, and whatever the current frame draws is never dropped.
 

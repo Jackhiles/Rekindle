@@ -2,6 +2,7 @@
 //! placed objects at their starting positions. No game logic runs yet.
 
 pub mod audio_out;
+mod hud;
 pub mod scene;
 pub mod gamepad;
 pub mod settings;
@@ -650,7 +651,15 @@ struct Viewer {
     fit: bool,
     show_hidden: bool,
     debug_boxes: bool,
-    hud: bool,
+    hud: hud::HudMode,
+    /// F4: show details of the object under the mouse.
+    inspector: bool,
+    /// Index into hud::SPEEDS.
+    speed_index: usize,
+    stats: hud::HudStats,
+    hud_font: Option<Font>,
+    /// F12 pressed: save a screenshot after this frame is drawn.
+    screenshot_requested: bool,
     running: bool,
     tick_acc: f64,
     input: Input,
@@ -762,6 +771,24 @@ impl Viewer {
 
     /// Screen position and uniform scale of the game view (stretching is done by the
     /// final blit, so the scene itself is always drawn with one scale).
+    /// F12: the window as a PNG in `<data dir>/screenshots/`.
+    fn save_screenshot(&mut self) {
+        let dir = crate::runtime::files::data_root().join("screenshots");
+        let _ = std::fs::create_dir_all(&dir);
+        let stem: String = self
+            .rt
+            .game
+            .name
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' })
+            .collect();
+        let stem = if stem.trim().is_empty() { "game".to_string() } else { stem.trim().to_string() };
+        let path = dir.join(format!("{stem} {}.png", chrono::Local::now().format("%Y-%m-%d %H-%M-%S")));
+        get_screen_data().export_png(&path.to_string_lossy());
+        self.log.line(&format!("screenshot {}", path.display()));
+        self.notice = Some((format!("Screenshot saved to {}", path.display()), get_time() + 3.0));
+    }
+
     fn viewport(&self) -> (Vec2, f32) {
         let (origin, size) = self.present();
         (origin, size.x / self.view_size().x)
@@ -829,7 +856,26 @@ impl Viewer {
             self.load_frame(self.rt.frame_index + n - 1);
         }
         if is_key_pressed(KeyCode::F1) {
-            self.hud = !self.hud;
+            self.hud = self.hud.next();
+        }
+        if is_key_pressed(KeyCode::F4) {
+            self.inspector = !self.inspector;
+        }
+        if is_key_pressed(KeyCode::F12) {
+            self.screenshot_requested = true;
+        }
+        if ctrl && is_key_pressed(KeyCode::M) {
+            let m = !self.audio.muted();
+            self.audio.set_muted(m);
+            self.notice = Some((if m { "Sound off".into() } else { "Sound on".into() }, get_time() + 2.0));
+        }
+        if ctrl && (is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::KpSubtract)) {
+            self.speed_index = self.speed_index.saturating_sub(1);
+            self.notice = Some((format!("Game speed x{}", hud::SPEEDS[self.speed_index]), get_time() + 2.0));
+        }
+        if ctrl && (is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd)) {
+            self.speed_index = (self.speed_index + 1).min(hud::SPEEDS.len() - 1);
+            self.notice = Some((format!("Game speed x{}", hud::SPEEDS[self.speed_index]), get_time() + 2.0));
         }
         let alt = is_key_down(KeyCode::LeftAlt) || is_key_down(KeyCode::RightAlt);
         if is_key_pressed(KeyCode::F11) || (alt && is_key_pressed(KeyCode::Enter)) {
@@ -941,7 +987,8 @@ impl Viewer {
             return;
         }
         let dt = 1.0 / self.rt.frame_rate as f64;
-        self.tick_acc = (self.tick_acc + get_frame_time() as f64).min(dt * 4.0);
+        let speed = hud::SPEEDS[self.speed_index] as f64;
+        self.tick_acc = (self.tick_acc + get_frame_time() as f64 * speed).min(dt * 4.0 * speed.max(1.0));
         while self.tick_acc >= dt && self.running {
             self.tick_acc -= dt;
             self.step();
@@ -1161,9 +1208,7 @@ impl Viewer {
             let (o, size) = self.present();
             self.pad.draw_cursor(o + c * (size / self.view_size()));
         }
-        if self.hud {
-            self.draw_hud();
-        }
+        self.draw_hud();
         self.textures.end_frame();
     }
 
@@ -1435,60 +1480,6 @@ impl Viewer {
         draw_rectangle_lines(p.x, p.y, b.w * xf.scale, b.h * xf.scale, 1.0, col);
         draw_text(&item.label, p.x + 2.0, p.y + 12.0, 14.0, col);
     }
-
-    fn draw_hud(&self) {
-        let f = self.rt.frame();
-        let unimpl = self.rt.unimplemented.borrow();
-        let mut top: Vec<_> = unimpl.iter().collect();
-        top.sort_by(|a, b| b.1.cmp(a.1));
-        let lines = [
-            format!(
-                "Frame {}/{}: \"{}\"  {}x{}  objects {}  tick {}  timer {:.1}s  {}",
-                self.rt.frame_index,
-                self.rt.game.frames.len() - 1,
-                f.name,
-                f.width,
-                f.height,
-                self.rt.instances.len(),
-                self.rt.tick,
-                self.rt.timer_ms / 1000.0,
-                if self.running { "RUNNING" } else { "PAUSED" },
-            ),
-            format!(
-                "scroll {:.0},{:.0}  {}  hidden {}  boxes {}  {} fps{}",
-                self.current_scroll().x,
-                self.current_scroll().y,
-                if self.fit { "FIT" } else { "1:1" },
-                if self.show_hidden { "shown" } else { "off" },
-                if self.debug_boxes { "on" } else { "off" },
-                get_fps(),
-                if self.rt.finished { "  [game ended]" } else { "" },
-            ),
-            format!(
-                "layers: {}",
-                f.layers
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| {
-                        let off = self.layer_off.get(i).copied().unwrap_or(false);
-                        format!("{}{}:{}", if off { "-" } else { "" }, (i + 1) % 10, l.name)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("  ")
-            ),
-            format!(
-                "unimplemented ({}): {}",
-                top.len(),
-                top.iter().take(6).map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", ")
-            ),
-            "F1 HUD  F2 pause  F3 step  F5 restart frame  F6 boxes  F7 hidden  F8 fit  F9 smooth  F11/Alt+Enter fullscreen  Ctrl+PgUp/PgDn frame  Ctrl+1-0 layer  Ctrl+Q quit".into(),
-        ];
-        let h = 18.0 * lines.len() as f32 + 8.0;
-        draw_rectangle(0.0, 0.0, screen_width(), h, Color::new(0.0, 0.0, 0.0, 0.65));
-        for (i, l) in lines.iter().enumerate() {
-            draw_text(l, 6.0, 16.0 + 18.0 * i as f32, 18.0, WHITE);
-        }
-    }
 }
 
 /// Draw a transition as coverage of the view with its colour. Wipe effects cover the
@@ -1627,7 +1618,18 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         fit: opts.fit,
         show_hidden: opts.show_hidden,
         debug_boxes: false,
-        hud: opts.screenshot.is_none() && opts.settings.hud,
+        // REKINDLE_HUD=compact|full|inspect overrides (also for screenshots).
+        hud: match std::env::var("REKINDLE_HUD").as_deref() {
+            Ok("compact") => hud::HudMode::Compact,
+            Ok("full") | Ok("inspect") => hud::HudMode::Full,
+            _ if opts.screenshot.is_none() && opts.settings.hud => hud::HudMode::Full,
+            _ => hud::HudMode::Off,
+        },
+        inspector: std::env::var("REKINDLE_HUD").as_deref() == Ok("inspect"),
+        speed_index: hud::NORMAL_SPEED,
+        stats: hud::HudStats::default(),
+        hud_font: load_ttf_font_from_bytes(crate::launcher::FONT_REGULAR).ok(),
+        screenshot_requested: false,
         running: opts.run_events,
         tick_acc: 0.0,
         input: Input::default(),
@@ -1761,6 +1763,11 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
         let t2 = std::time::Instant::now();
         v.draw();
         let t3 = std::time::Instant::now();
+        v.stats.record(get_frame_time() * 1000.0, (t1 - t0).as_secs_f32() * 1000.0, (t3 - t2).as_secs_f32() * 1000.0);
+        if v.screenshot_requested {
+            v.screenshot_requested = false;
+            v.save_screenshot();
+        }
         next_frame().await;
         if let Some(p) = &mut frame_profile {
             if p.add([t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]) {
