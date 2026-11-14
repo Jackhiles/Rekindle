@@ -20,12 +20,17 @@ fn library_file() -> PathBuf {
     data_dir().join("library.txt")
 }
 
-/// Cached icon (PNG) for a game file.
-pub fn icon_path(game: &Path) -> PathBuf {
+/// A short stable key for a game file (cache file names).
+pub fn game_key(game: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     game.to_string_lossy().to_lowercase().hash(&mut h);
-    data_dir().join("icons").join(format!("{:016x}.png", h.finish()))
+    format!("{:016x}", h.finish())
+}
+
+/// Cached icon (PNG) for a game file.
+pub fn icon_path(game: &Path) -> PathBuf {
+    data_dir().join("icons").join(format!("{}.png", game_key(game)))
 }
 
 pub fn load() -> Vec<Entry> {

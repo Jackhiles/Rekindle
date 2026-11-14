@@ -1,11 +1,14 @@
 //! The game launcher shown when Rekindle is started without a game: a library of game
 //! files with Play, desktop-shortcut and remove buttons. Games run in their own process.
 
+mod covers;
 pub mod library;
 pub mod steam;
 pub mod steam_shortcuts;
 mod art;
 pub mod update;
+mod view;
+use view::Menu;
 
 /// File / folder pickers.
 mod dialogs {
@@ -61,18 +64,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-const BG: Color = Color::new(0.07, 0.07, 0.09, 1.0);
-const CARD: Color = Color::new(0.12, 0.12, 0.15, 1.0);
-const CARD_HOVER: Color = Color::new(0.16, 0.16, 0.20, 1.0);
-const TEXT: Color = Color::new(0.93, 0.93, 0.95, 1.0);
-const MUTED: Color = Color::new(0.55, 0.56, 0.62, 1.0);
+const BG: Color = Color::new(0.055, 0.055, 0.067, 1.0);
+/// Panels and the details pane.
+const CARD: Color = Color::new(0.095, 0.095, 0.115, 1.0);
+const TEXT: Color = Color::new(0.94, 0.94, 0.96, 1.0);
+const MUTED: Color = Color::new(0.56, 0.57, 0.63, 1.0);
 const ACCENT: Color = Color::new(0.96, 0.52, 0.18, 1.0);
-const BUTTON: Color = Color::new(0.22, 0.22, 0.27, 1.0);
+const BUTTON: Color = Color::new(0.16, 0.16, 0.195, 1.0);
+/// Pop-up menus and toasts.
+const MENU: Color = Color::new(0.14, 0.14, 0.17, 1.0);
+const DANGER: Color = Color::new(0.94, 0.38, 0.35, 1.0);
 
-const ROW_H: f32 = 76.0;
 /// Vertical step between rows of the settings panel.
 const ROW_STEP: f32 = 54.0;
-const HEADER_H: f32 = 72.0;
+const HEADER_H: f32 = 64.0;
+/// Space kept free at the bottom of panels (toasts appear there).
 const STATUS_H: f32 = 30.0;
 
 /// Rekindle's icon (assets/icon, drawn by make_icon.py) and the launcher's UI font
@@ -169,6 +175,8 @@ enum Msg {
     /// A line for the Steam panel's results.
     SteamLine(String),
     UpdateInstalled(Result<PathBuf, String>),
+    /// Cover / hero images decoded by the art worker.
+    Art(covers::Art),
 }
 
 struct Launcher {
@@ -218,11 +226,28 @@ struct Launcher {
     steam_confirm: Option<usize>,
     /// Offering (in the status bar) to add Rekindle itself to Steam.
     steam_offer: bool,
+    /// Library artwork: (cover, hero) per game file, and games already asked for.
+    art: HashMap<PathBuf, (Option<Texture2D>, Option<Texture2D>)>,
+    art_requested: std::collections::HashSet<PathBuf>,
+    art_tx: Sender<(PathBuf, String)>,
+    /// Typed filter for the library.
+    search: String,
+    menu: Option<Menu>,
+    /// A pop-up menu is open: other buttons ignore the mouse.
+    block_input: bool,
+    /// Columns in the cover grid (for up / down navigation).
+    grid_cols: usize,
+    /// Scroll the selected game into view.
+    reveal: bool,
 }
 
 impl Launcher {
     fn new() -> Self {
         let (tx, rx) = channel();
+        let art_out = tx.clone();
+        let art_tx = covers::worker(move |a| {
+            let _ = art_out.send(Msg::Art(a));
+        });
         let font = load_ttf_font_from_bytes(FONT_REGULAR).ok();
         let bold = load_ttf_font_from_bytes(FONT_SEMIBOLD).ok();
         Self {
@@ -259,11 +284,19 @@ impl Launcher {
             has_steam: !steam::steam_roots().is_empty(),
             steam_confirm: None,
             steam_offer: false,
+            art: HashMap::new(),
+            art_requested: Default::default(),
+            art_tx,
+            search: String::new(),
+            menu: None,
+            block_input: false,
+            grid_cols: 1,
+            reveal: false,
         }
     }
 
-    /// Controller navigation: up / down select a game, A plays it, Y opens its settings,
-    /// B closes a panel. Returns the action for the selected game (0 play, 4 settings).
+    /// Controller navigation: the D-pad / left stick move through the cover grid, A plays,
+    /// Y opens settings, B closes a panel or menu. Returns the action for the selected game.
     fn pad_nav(&mut self) -> Option<(usize, u8)> {
         use gilrs::{Axis, Button};
         self.pad_back = false;
@@ -273,18 +306,17 @@ impl Launcher {
         let g = self.pad.as_mut()?;
         while g.next_event().is_some() {}
         let (_, p) = g.gamepads().find(|(_, p)| p.is_connected())?;
-        let ly = p.value(Axis::LeftStickY);
+        let (lx, ly) = (p.value(Axis::LeftStickX), p.value(Axis::LeftStickY));
         let mut now = std::collections::HashSet::new();
-        for b in [Button::DPadUp, Button::DPadDown, Button::South, Button::East, Button::North] {
+        for b in [Button::DPadUp, Button::DPadDown, Button::DPadLeft, Button::DPadRight, Button::South, Button::East, Button::North] {
             if p.is_pressed(b) {
                 now.insert(b);
             }
         }
-        if ly > 0.6 {
-            now.insert(Button::DPadUp);
-        }
-        if ly < -0.6 {
-            now.insert(Button::DPadDown);
+        for (on, b) in [(ly > 0.6, Button::DPadUp), (ly < -0.6, Button::DPadDown), (lx < -0.6, Button::DPadLeft), (lx > 0.6, Button::DPadRight)] {
+            if on {
+                now.insert(b);
+            }
         }
         if game_running {
             // Buttons pressed in the game are not for the launcher; also don't act on them
@@ -293,39 +325,24 @@ impl Launcher {
             return None;
         }
         let pressed = |b: Button| now.contains(&b) && !self.pad_held.contains(&b);
-        let (up, down, a, b, y) = (
-            pressed(Button::DPadUp),
-            pressed(Button::DPadDown),
-            pressed(Button::South),
-            pressed(Button::East),
-            pressed(Button::North),
-        );
+        let moves = [(Button::DPadLeft, -1isize), (Button::DPadRight, 1), (Button::DPadUp, -(self.grid_cols.max(1) as isize)), (Button::DPadDown, self.grid_cols.max(1) as isize)];
+        let delta: Option<isize> = moves.iter().find(|(b, _)| pressed(*b)).map(|(_, d)| *d);
+        let (a, b, y) = (pressed(Button::South), pressed(Button::East), pressed(Button::North));
         self.pad_held = now;
         self.pad_back = b;
         self.pad_a = a;
-        if self.entries.is_empty() || self.settings_panel.is_some() || self.show_log || self.steam_panel || self.steam_confirm.is_some() {
+        if self.entries.is_empty() || !self.library_view() || self.menu.is_some() {
             if b && self.show_log {
                 self.show_log = false;
             }
             return None;
         }
-        let n = self.entries.len();
-        let cur = self.selected.unwrap_or(0).min(n - 1);
-        if up || down {
-            let next = if self.selected.is_none() { 0 } else if up { cur.saturating_sub(1) } else { (cur + 1).min(n - 1) };
-            self.selected = Some(next);
-            // Keep the selection on screen.
-            let y = next as f32 * ROW_H;
-            let visible = screen_height() - HEADER_H - STATUS_H;
-            if y < self.scroll {
-                self.scroll = y;
-            } else if y + ROW_H > self.scroll + visible {
-                self.scroll = y + ROW_H - visible;
-            }
+        if let Some(d) = delta {
+            self.move_selection(d);
         }
         match (self.selected, a, y) {
-            (Some(i), true, _) => Some((i.min(n - 1), 0)),
-            (Some(i), _, true) => Some((i.min(n - 1), 4)),
+            (Some(i), true, _) => Some((i, view::ACT_PLAY)),
+            (Some(i), _, true) => Some((i, view::ACT_SETTINGS)),
             _ => None,
         }
     }
@@ -452,18 +469,18 @@ impl Launcher {
 
     /// A button; returns true when clicked.
     fn button(&self, r: Rect, label: &str, accent: bool, enabled: bool) -> bool {
-        let hover = enabled && r.contains(Vec2::from(mouse_position()));
+        let hover = enabled && !self.block_input && r.contains(Vec2::from(mouse_position()));
         let base = if accent { ACCENT } else { BUTTON };
         let color = if !enabled {
-            Color::new(base.r, base.g, base.b, 0.4)
+            view::mix(BG, base, 0.45)
         } else if hover {
-            Color::new((base.r + 0.08).min(1.0), (base.g + 0.08).min(1.0), (base.b + 0.08).min(1.0), 1.0)
+            view::mix(base, Color::new(1.0, 1.0, 1.0, 1.0), 0.1)
         } else {
             base
         };
-        draw_rectangle(r.x, r.y, r.w, r.h, color);
+        view::rrect(r.x, r.y, r.w, r.h, 8.0, color);
         let tw = self.bold_width(label, 16);
-        let fg = if accent { Color::new(0.1, 0.06, 0.02, 1.0) } else { TEXT };
+        let fg = if !enabled { MUTED } else if accent { Color::new(0.1, 0.06, 0.02, 1.0) } else { TEXT };
         self.bold_text(label, r.x + (r.w - tw) / 2.0, r.y + r.h / 2.0 + 6.0, 16, fg);
         hover && is_mouse_button_pressed(MouseButton::Left)
     }
@@ -571,6 +588,16 @@ impl Launcher {
                         }
                     }
                 }
+                Msg::Art(a) => {
+                    let tex = |img: Option<covers::Rgba>| {
+                        img.map(|i| {
+                            let t = Texture2D::from_rgba8(i.w, i.h, &i.px);
+                            t.set_filter(FilterMode::Linear);
+                            t
+                        })
+                    };
+                    self.art.insert(a.game, (tex(a.cover), tex(a.hero)));
+                }
                 Msg::UpdateInstalled(Err(e)) => {
                     self.updating = false;
                     self.busy = None;
@@ -583,211 +610,27 @@ impl Launcher {
     fn draw(&mut self) {
         let (sw, sh) = (screen_width(), screen_height());
         clear_background(BG);
-        let idle = self.busy.is_none();
-
-        // Header.
-        // Logo and title.
-        if let Some(t) = self.logo() {
-            draw_texture_ex(&t, 22.0, 18.0, WHITE, DrawTextureParams { dest_size: Some(vec2(38.0, 38.0)), ..Default::default() });
-        }
-        self.bold_text("Rekindle", 70.0, 47.0, 32, TEXT);
-        let tw = self.bold_width("Rekindle", 32) + 46.0;
-        let subtitle = format!("Fusion game launcher  v{}", update::current_version());
-        // Only when it fits left of the header buttons (4 buttons + gaps = 586 px).
-        if 24.0 + tw + 14.0 + self.text_width(&subtitle, 17) < sw - 24.0 - 738.0 - 12.0 {
-            self.text(&subtitle, 24.0 + tw + 14.0, 46.0, 17, MUTED);
-        }
-        let add_folder = Rect::new(sw - 24.0 - 150.0, 20.0, 150.0, 36.0);
-        let add_game = Rect::new(add_folder.x - 12.0 - 140.0, 20.0, 140.0, 36.0);
-        let log_btn = Rect::new(add_game.x - 12.0 - 120.0, 20.0, 120.0, 36.0);
-        let folder_btn = Rect::new(log_btn.x - 12.0 - 130.0, 20.0, 130.0, 36.0);
-        let steam_btn = Rect::new(folder_btn.x - 12.0 - 140.0, 20.0, 140.0, 36.0);
-        if self.button(steam_btn, "Steam games", false, true) {
-            self.steam_panel = !self.steam_panel;
-            self.settings_panel = None;
-            self.show_log = false;
-        }
-        if self.button(log_btn, if self.show_log { "Library" } else { "Play log" }, false, true) {
-            self.show_log = !self.show_log;
-            self.scroll = 0.0;
-        }
-        if self.button(folder_btn, "Open folder", false, true) {
-            self.open_data_folder();
-        }
-        if self.button(add_game, "Add game...", true, idle) {
-            let picked = dialogs::pick_game();
-            if let Some(f) = picked {
-                self.add_paths(vec![f], "game".into());
-            }
-        }
-        if self.button(add_folder, "Add folder...", false, idle) {
-            if let Some(dir) = dialogs::pick_folder() {
-                let files = library::find_games(&dir);
-                self.add_paths(files, "games from folder".into());
-            }
-        }
-
-        // Game list (or the play log).
-        let top = HEADER_H;
-        let bottom = sh - STATUS_H;
+        self.block_input = self.menu.is_some();
         // Read the controller every frame (panels use B / A from it too).
         let pad_action = self.pad_nav();
+        let top = HEADER_H;
         if let Some(i) = self.steam_confirm {
             self.draw_steam_confirm(top, i);
-            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
-            self.draw_status(sh);
-            return;
-        }
-        if self.steam_panel {
+        } else if self.steam_panel {
             self.draw_steam_panel(top);
-            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
-            self.draw_status(sh);
-            return;
+        } else if self.settings_panel.is_some() {
+            self.draw_settings_panel(top, sh - STATUS_H);
+        } else if self.show_log {
+            self.draw_log(top, sh - STATUS_H);
+        } else {
+            self.draw_library(sw, sh, pad_action);
         }
-        if self.settings_panel.is_some() {
-            self.draw_settings_panel(top, bottom);
-            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
-            self.draw_status(sh);
-            return;
+        if !self.library_view() {
+            while get_char_pressed().is_some() {}
         }
-        if self.show_log {
-            self.draw_log(top, bottom);
-            draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
-            self.draw_status(sh);
-            return;
-        }
-        let content_h = self.entries.len() as f32 * ROW_H;
-        let max_scroll = (content_h - (bottom - top) + 12.0).max(0.0);
-        self.scroll = (self.scroll - mouse_wheel().1 * 0.5).clamp(0.0, max_scroll);
-        if self.entries.is_empty() {
-            let msg = "No games yet. Use \"Add game...\" or \"Add folder...\" to build your library.";
-            let w = self.text_width(msg, 18);
-            self.text(msg, (sw - w) / 2.0, sh / 2.0, 18, MUTED);
-        }
-        let mouse = Vec2::from(mouse_position());
-        let mut action: Option<(usize, u8)> = pad_action;
-        for i in 0..self.entries.len() {
-            let y = top + i as f32 * ROW_H - self.scroll;
-            if y + ROW_H < top || y > bottom {
-                continue;
-            }
-            let row = Rect::new(16.0, y + 4.0, sw - 32.0, ROW_H - 8.0);
-            let hover = row.contains(mouse) && mouse.y > top && mouse.y < bottom;
-            draw_rectangle(row.x, row.y, row.w, row.h, if hover { CARD_HOVER } else { CARD });
-            if self.selected == Some(i) {
-                draw_rectangle_lines(row.x, row.y, row.w, row.h, 3.0, ACCENT);
-            }
-            let icon_rect = Rect::new(row.x + 12.0, row.y + (row.h - 48.0) / 2.0, 48.0, 48.0);
-            let path = self.entries[i].path.clone();
-            match self.icon(&path) {
-                Some(t) => draw_texture_ex(&t, icon_rect.x, icon_rect.y, WHITE, DrawTextureParams {
-                    dest_size: Some(vec2(48.0, 48.0)),
-                    ..Default::default()
-                }),
-                None => draw_rectangle(icon_rect.x, icon_rect.y, 48.0, 48.0, BUTTON),
-            }
-            let e = &self.entries[i];
-            let missing = !e.path.is_file();
-            let buttons_w = if self.has_steam { 558.0 } else { 470.0 };
-            let title_w = row.w - 76.0 - buttons_w;
-            let title = self.fit(&e.title, 21, title_w);
-            self.text(&title, row.x + 76.0, row.y + 30.0, 21, if missing { MUTED } else { TEXT });
-            let mut p = e.path.display().to_string();
-            if missing {
-                p = format!("(missing) {p}");
-            }
-            if let Some((secs, last)) = self.totals.get(&e.path.to_string_lossy().to_lowercase()) {
-                let tw = self.text_width(&title, 21);
-                let stats = format!("Played {}  -  last {last}", playlog::duration(*secs));
-                // Next to the title when there's room, otherwise in place of the path.
-                if tw + 16.0 + self.text_width(&stats, 15) <= title_w {
-                    self.text(&stats, row.x + 76.0 + tw + 16.0, row.y + 30.0, 15, ACCENT);
-                } else {
-                    p = stats;
-                }
-            }
-            let max_w = row.w - 76.0 - buttons_w + 10.0;
-            while self.text_width(&p, 14) > max_w && p.chars().count() > 8 {
-                p = format!("...{}", p.chars().skip(4).collect::<String>());
-            }
-            self.text(&p, row.x + 76.0, row.y + 52.0, 14, MUTED);
-
-            let by = row.y + (row.h - 34.0) / 2.0;
-            let remove = Rect::new(row.x + row.w - 12.0 - 40.0, by, 40.0, 34.0);
-            let mods = Rect::new(remove.x - 8.0 - 70.0, by, 70.0, 34.0);
-            let settings = Rect::new(mods.x - 8.0 - 90.0, by, 90.0, 34.0);
-            let shortcut = Rect::new(settings.x - 8.0 - 100.0, by, 100.0, 34.0);
-            let to_steam = Rect::new(shortcut.x - 8.0 - 80.0, by, 80.0, 34.0);
-            let play = if self.has_steam { Rect::new(to_steam.x - 8.0 - 100.0, by, 100.0, 34.0) } else { Rect::new(shortcut.x - 8.0 - 100.0, by, 100.0, 34.0) };
-            let in_list = mouse.y > top && mouse.y < bottom;
-            let running = self.running.iter().any(|(p, _)| *p == path);
-            if self.button(play, if running { "Running" } else { "Play" }, true, !missing && !running) && in_list {
-                action = Some((i, 0));
-            } else if self.button(settings, "Settings", false, true) && in_list {
-                action = Some((i, 4));
-            } else if self.button(shortcut, "Shortcut", false, !missing) && in_list {
-                action = Some((i, 1));
-            } else if self.has_steam && self.button(to_steam, "Steam", false, !missing && self.busy.is_none()) && in_list {
-                action = Some((i, 5));
-            } else if self.button(mods, "Mods", false, true) && in_list {
-                action = Some((i, 3));
-            } else if self.button(remove, "X", false, true) && in_list {
-                action = Some((i, 2));
-            } else if hover && is_mouse_button_pressed(MouseButton::Left) {
-                // Double-click a card to play.
-                let now = get_time();
-                if self.last_click.is_some_and(|(j, t)| j == i && now - t < 0.4) {
-                    action = Some((i, 0));
-                    self.last_click = None;
-                } else {
-                    self.last_click = Some((i, now));
-                }
-            }
-        }
-        // Keep the header and status bar on top of scrolled cards.
-        draw_rectangle(0.0, bottom, sw, STATUS_H, BG);
-        match action {
-            Some((i, 0)) => self.play(i),
-            Some((i, 1)) => {
-                let e = self.entries[i].clone();
-                match library::create_shortcut(&e.path, &e.title) {
-                    Ok(p) => self.say(format!("Shortcut created: {}", p.display())),
-                    Err(err) => self.say(format!("Could not create the shortcut: {err}")),
-                }
-            }
-            Some((i, 5)) => {
-                if steam_shortcuts::steam_running() && !steam_shortcuts::in_gaming_mode() {
-                    self.steam_confirm = Some(i);
-                } else {
-                    self.add_to_steam(i);
-                }
-            }
-            Some((i, 4)) => {
-                let path = self.entries[i].path.clone();
-                let legacy = crate::runtime::files::default_save_root(&self.entries[i].title);
-                self.settings_panel = Some((i, Settings::for_game(&path, Some(&legacy))));
-                self.saves_status = None;
-            }
-            Some((i, 3)) => {
-                let path = self.entries[i].path.clone();
-                match crate::mods::Mods::ensure_dir(&path) {
-                    Ok(dir) => {
-                        let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                        let _ = std::process::Command::new(opener).arg(&dir).spawn();
-                        self.say(format!("Mods folder: {} (see README.txt inside)", dir.display()));
-                    }
-                    Err(err) => self.say(format!("Could not create the mods folder: {err}")),
-                }
-            }
-            Some((i, _)) => {
-                let e = self.entries.remove(i);
-                library::save(&self.entries);
-                self.say(format!("Removed {} from the library (the game files are untouched).", e.title));
-            }
-            None => {}
-        }
-
-        self.draw_status(sh);
+        // The header last, so scrolled content slides under it.
+        self.draw_header(sw);
+        self.draw_overlays(sw, sh);
     }
 
     /// A row of mutually exclusive choices; returns the index clicked, if any.
@@ -1122,45 +965,30 @@ impl Launcher {
             None => {}
         }
     }
-
-    fn draw_status(&mut self, sh: f32) {
-        // Update offer at the right of the status bar.
-        if let Some(r) = self.update.clone() {
-            let label = if self.updating { format!("Updating to v{}...", r.version) } else { format!("Update to v{}", r.version) };
-            let w = self.text_width(&label, 17) + 30.0;
-            let rect = Rect::new(screen_width() - 16.0 - w, sh - STATUS_H + 2.0, w, STATUS_H - 4.0);
-            if self.button(rect, &label, true, !self.updating) {
-                self.updating = true;
-                self.busy = Some(format!("Downloading Rekindle v{}...", r.version));
-                let tx = self.tx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Msg::UpdateInstalled(update::install(&r)));
-                });
-            }
-        }
-        if self.steam_offer && self.busy.is_none() {
-            self.draw_steam_offer(sh);
-            return;
-        }
-        let line = match (&self.busy, &self.status) {
-            (Some(b), _) => Some(b.clone()),
-            (None, Some((s, until))) if get_time() < *until => Some(s.clone()),
-            _ => None,
-        };
-        if let Some(s) = line {
-            self.text(&s, 20.0, sh - 10.0, 16, MUTED);
-        }
-    }
 }
 
 pub async fn run() {
     let mut l = Launcher::new();
     l.start_update_check();
     l.check_steam_shortcut();
+    // Testing: REKINDLE_LAUNCHER_SHOT=<file.png> saves the window once artwork has loaded
+    // (or after 20 s), then exits. REKINDLE_LAUNCHER_SELECT=<n> selects the n-th game.
+    let shot = std::env::var_os("REKINDLE_LAUNCHER_SHOT").map(PathBuf::from);
+    if let Some(n) = std::env::var("REKINDLE_LAUNCHER_SELECT").ok().and_then(|v| v.parse::<usize>().ok()) {
+        l.selected = Some(n);
+    }
+    let started = get_time();
     loop {
         l.update();
         l.refresh_log();
         l.draw();
+        if let Some(p) = &shot {
+            let settled = !l.art_requested.is_empty() && l.art_requested.iter().all(|g| l.art.contains_key(g));
+            if (settled && get_time() - started > 2.0) || get_time() - started > 20.0 {
+                get_screen_data().export_png(&p.to_string_lossy());
+                return;
+            }
+        }
         next_frame().await;
     }
 }

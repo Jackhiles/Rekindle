@@ -425,7 +425,7 @@ pub fn start_steam() {
 }
 
 /// Load a game for its icon / pictures (a ".dat" game's icon lives in the .exe next to it).
-fn load_game(game: &Path) -> Option<crate::ctf_loader::GameData> {
+pub(super) fn load_game(game: &Path) -> Option<crate::ctf_loader::GameData> {
     let src = if game.extension().is_some_and(|e| e.eq_ignore_ascii_case("dat")) && game.with_extension("exe").is_file() {
         game.with_extension("exe")
     } else {

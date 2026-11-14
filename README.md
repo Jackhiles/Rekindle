@@ -78,11 +78,15 @@ Run `build.cmd` (Windows) or `./build.sh` (Linux / Steam Deck). It builds Rekind
 fine. (`cargo build --release` alone leaves the program in `target/release/`.)
 
 ### Launcher
-Run `rekindle` without a game to open the launcher. "Add game..." picks a game file and "Add folder..." finds every Fusion
-game in a folder (also from the command line: `rekindle --add FILE_OR_FOLDER`). Each game has **Play**, **Desktop
-shortcut** (a shortcut that starts the game with Rekindle, using the game's own icon; also `rekindle GAME --shortcut`)
-and **X** (removes it from the library; the files are untouched). Double-click a game to play it. Only one copy
+Run `rekindle` without a game to open the launcher: a grid of game covers with the selected game's details beside it.
+Covers and banners come from Steam's library artwork when the game is a Steam game, otherwise they are generated from
+the game's own images (cached in `%APPDATA%\Rekindlert\`; *Refresh artwork* in a game's menu makes them again).
+Type to search; arrow keys / D-pad move, Enter / A plays, Y opens settings. **+ Add** adds a game file, a folder of
+games (also `rekindle --add FILE_OR_FOLDER`) or Steam games; the **...** menu has Steam games, the play log and the data
+folder. A game's own **...** menu has Add to Steam, Desktop shortcut (also `rekindle GAME --shortcut`), Mods folder,
+Open game folder and Remove from library (the files are untouched). Double-click a cover to play. Only one copy
 of a game runs at a time, and while a game started from the launcher is running, the launcher ignores the controller.
+`REKINDLE_LAUNCHER_SHOT=file.png` saves the launcher window once artwork has loaded and exits (for testing).
 
 **Steam** (shown when Steam is installed; also `rekindle GAME --add-to-steam`) adds the game to Steam as a non-Steam
 shortcut that starts it with Rekindle, with the game's icon. If the game is or was a Steam game (installed through

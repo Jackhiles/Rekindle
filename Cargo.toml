@@ -22,6 +22,8 @@ serde_json = "1"
 # Gamepads (XInput / Windows.Gaming.Input, evdev on Linux) mapped to keyboard + mouse.
 # Text for generated library artwork (already used by macroquad).
 fontdue = "0.9"
+# Steam's cached library artwork (covers in the launcher) is JPEG.
+jpeg-decoder = { version = "0.3", default-features = false }
 gilrs = "0.11"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm", "adpcm", "ogg", "vorbis"] }
 cpal = "0.15"
