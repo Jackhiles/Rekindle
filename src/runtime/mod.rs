@@ -189,6 +189,8 @@ pub struct Runtime {
     group_just_activated: HashSet<u32>,
     loops: HashMap<String, LoopState>,
     pending: Option<FrameChange>,
+    /// `--probe`: fast loops do not run (every event is visited directly).
+    probing: bool,
     /// Top-left of the visible area in frame coordinates.
     pub scroll: (f64, f64),
     pub view_size: (f64, f64),
@@ -290,6 +292,7 @@ impl Runtime {
             group_just_activated: HashSet::default(),
             loops: HashMap::default(),
             pending: None,
+            probing: false,
             scroll: (0.0, 0.0),
             view_size,
             background_color: [0, 0, 0, 255],

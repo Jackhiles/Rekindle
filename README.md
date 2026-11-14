@@ -209,6 +209,8 @@ rekindle <GAME>                         run the game
           [--screenshot out.png [--ticks N]]   render (after N ticks) to a PNG and exit
 rekindle <GAME> --headless N [--press TICK:VK]...   simulate N ticks without a window
 rekindle <GAME> --sweep N               run every frame N ticks and list unsupported features
+rekindle <GAME> --probe                 try every condition / action / expression of every frame once
+                                        and list the unsupported ones with the frames that use them
 rekindle <GAME> --dump-events N         print frame N's event sheet
 rekindle --scenario FILE_OR_DIR         run regression scenarios
 rekindle <GAME> --screenshot DIR --script FILE   play a scripted input file, saving a PNG at each `shot TICK name.png`

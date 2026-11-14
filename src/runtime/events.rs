@@ -443,6 +443,56 @@ impl Runtime {
     // ---------- event loop ----------
 
     /// Run the event sheet once. With `loop_name`, only "On loop" events for that loop run.
+    /// Coverage probe (`--probe`): evaluate every condition, run every action and evaluate
+    /// every expression of the current frame's events once, whether or not the game would
+    /// reach them, so everything unsupported ends up in `unimplemented`. The runtime's state
+    /// afterwards is meaningless; load a frame again before using it.
+    pub fn probe_events(&mut self) {
+        self.probing = true;
+        let events = self.events.clone();
+        let input = Input::default();
+        // One instance of every object the events name, so actions and conditions on
+        // objects that are created later are tested too.
+        let mut named: Vec<u16> = events
+            .groups
+            .iter()
+            .flat_map(|g| g.conditions.iter().chain(g.actions.iter()))
+            .filter(|a| a.object_type >= 0)
+            .map(|a| a.object_info)
+            .collect();
+        named.sort_unstable();
+        named.dedup();
+        for oi in named {
+            if self.instances_of(oi).is_empty() {
+                let _ = self.create_instance(oi, 0.0, 0.0, 0);
+            }
+        }
+        for (gi, g) in events.groups.iter().enumerate() {
+            for (ci, c) in g.conditions.iter().enumerate() {
+                // Group start / end and OR are structure, handled by run_events / run_group.
+                if [-10, -11, -24, -25].iter().any(|&n| cond_is(c, SYS, n)) {
+                    continue;
+                }
+                let mut sel = Sel::default();
+                for i in 0..c.params.len() {
+                    let _ = self.eval_param(c, i, &sel, None);
+                }
+                let _ = self.eval_condition(gi, ci, c, &mut sel, &input);
+            }
+            for a in &g.actions {
+                let mut sel = Sel::default();
+                for i in 0..a.params.len() {
+                    let _ = self.eval_param(a, i, &sel, None);
+                }
+                self.exec_action(a, &mut sel, &input);
+                self.pending = None;
+                self.finished = false;
+                self.transition = None;
+            }
+        }
+        self.probing = false;
+    }
+
     pub(super) fn run_events(&mut self, input: &Input, loop_name: Option<&str>) {
         let events = self.events.clone();
         let mut stack: Vec<bool> = Vec::new();
@@ -1302,6 +1352,9 @@ impl Runtime {
     }
 
     fn run_fast_loop(&mut self, name: &str, times: i32, input: &Input) {
+        if self.probing {
+            return;
+        }
         let key = name.to_lowercase();
         let saved = self.loops.remove(&key);
         self.loops.insert(key.clone(), Default::default());

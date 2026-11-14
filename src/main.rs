@@ -129,6 +129,11 @@ struct Cli {
     #[arg(long, value_name = "N")]
     sweep: Option<u64>,
 
+    /// Visit every event of every frame once (conditions, actions, expressions) and list what
+    /// is unsupported, with the frames that use it.
+    #[arg(long)]
+    probe: bool,
+
     /// With --headless: press a key (Windows VK code) at a tick, e.g. 100:13 for Enter; repeatable.
     #[arg(long, value_name = "TICK:VK")]
     press: Vec<String>,
@@ -232,6 +237,10 @@ fn main() -> Result<()> {
     }
     if let Some(f) = cli.dump_events {
         dump::print_events(&game, f);
+        return Ok(());
+    }
+    if cli.probe {
+        run_probe(game, cli.save_dir.clone());
         return Ok(());
     }
     if let Some(n) = cli.sweep {
@@ -373,6 +382,48 @@ fn run_headless(
 }
 
 /// Compatibility sweep: every frame, N ticks each, then the unsupported features hit overall.
+fn run_probe(game: ctf_loader::GameData, save_dir: Option<PathBuf>) {
+    use std::collections::BTreeMap;
+    let frames = game.frames.len();
+    let names: Vec<String> = game.frames.iter().map(|f| f.name.clone()).collect();
+    let save_dir = save_dir.unwrap_or_else(|| std::env::temp_dir().join(format!("rekindle-probe-{}", std::process::id())));
+    let mut rt = runtime::Runtime::with_save_root(game, 0, Some(save_dir));
+    rt.files.isolated = true;
+    // feature -> (uses, frames)
+    let mut found: BTreeMap<String, (u64, Vec<usize>)> = BTreeMap::new();
+    let mut crashed = Vec::new();
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    for f in 0..frames {
+        rt.unimplemented.borrow_mut().clear();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.load_frame(f);
+            rt.probe_events();
+        }));
+        if let Err(e) = r {
+            let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+            crashed.push((f, msg));
+        }
+        for (k, n) in rt.unimplemented.borrow().iter() {
+            let e = found.entry(k.clone()).or_default();
+            e.0 += n;
+            e.1.push(f);
+        }
+    }
+    std::panic::set_hook(quiet);
+    let mut v: Vec<_> = found.into_iter().collect();
+    v.sort_by(|a, b| b.1 .1.len().cmp(&a.1 .1.len()).then(a.0.cmp(&b.0)));
+    println!("probed {frames} frames; unsupported features: {}", v.len());
+    for (k, (_, fr)) in &v {
+        let list: Vec<String> = fr.iter().take(6).map(|f| format!("{f} \"{}\"", names[*f])).collect();
+        let more = if fr.len() > 6 { format!(" +{}", fr.len() - 6) } else { String::new() };
+        println!("  {:3} frames  {k}  [{}{more}]", fr.len(), list.join(", "));
+    }
+    for (f, m) in &crashed {
+        println!("  PANIC in frame {f} \"{}\": {m}", names[*f]);
+    }
+}
+
 fn run_sweep(game: ctf_loader::GameData, ticks: u64, save_dir: Option<PathBuf>) {
     let frames = game.frames.len();
     let save_dir = save_dir.unwrap_or_else(|| std::env::temp_dir().join("rekindle-sweep"));
