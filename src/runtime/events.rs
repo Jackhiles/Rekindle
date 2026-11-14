@@ -1805,6 +1805,17 @@ impl Runtime {
     }
 
     /// Resolve a position parameter to (x, y, layer, direction).
+    /// A position's chosen direction. It is stored as a 32-bit mask with one bit per
+    /// direction (bit 0 right, 8 up, 16 left, 24 down); several bits pick one at random.
+    fn position_direction(&self, p: &Position) -> Option<usize> {
+        let mask = p.direction as u32;
+        match mask.count_ones() {
+            0 => None,
+            1 => Some(mask.trailing_zeros() as usize),
+            _ => Some(dir_from_mask(mask, self.random(32))),
+        }
+    }
+
     pub(super) fn resolve_position(
         &self,
         p: &Position,
@@ -1818,8 +1829,8 @@ impl Runtime {
             } else {
                 (p.layer as usize).min(max_layer)
             };
-            let dir = if p.direction >= 0 && p.flags & position_flags::DEFAULT_DIRECTION == 0 {
-                Some(p.direction as usize % 32)
+            let dir = if p.flags & position_flags::DEFAULT_DIRECTION == 0 {
+                self.position_direction(p)
             } else {
                 None
             };
@@ -1848,8 +1859,8 @@ impl Runtime {
         // chosen in the parameter.
         let dir = if p.flags & position_flags::INITIAL_DIRECTION != 0 {
             Some(pi.direction())
-        } else if p.flags & position_flags::DEFAULT_DIRECTION == 0 && p.direction >= 0 {
-            Some(p.direction as usize % 32)
+        } else if p.flags & position_flags::DEFAULT_DIRECTION == 0 {
+            self.position_direction(p)
         } else {
             None
         };

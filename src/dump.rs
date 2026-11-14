@@ -310,7 +310,7 @@ pub fn print_events(g: &GameData, frame: usize) {
             }
             other => {
                 let s = format!("{other:?}");
-                s.chars().take(80).collect()
+                s.chars().take(if std::env::var_os("REKINDLE_FULL_PARAMS").is_some() { usize::MAX } else { 80 }).collect()
             }
         }
     };
