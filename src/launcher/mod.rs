@@ -492,6 +492,7 @@ impl Launcher {
         std::thread::spawn(move || {
             let mut found = 0;
             let n = files.len();
+            let single = (n == 1).then(|| files[0].clone());
             for (i, f) in files.into_iter().enumerate() {
                 let name = f.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 let _ = tx.send(Msg::Status(format!("Checking {name} ({}/{n})", i + 1)));
@@ -501,6 +502,7 @@ impl Launcher {
                 }
             }
             let _ = tx.send(Msg::Done(match found {
+                0 if single.is_some() => library::why_not(single.as_deref().expect("checked")),
                 0 => "No Fusion games found there.".into(),
                 1 => "Added 1 game.".into(),
                 k => format!("Added {k} games."),

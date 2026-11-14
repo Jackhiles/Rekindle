@@ -104,6 +104,17 @@ pub fn write_png(path: &Path, size: u32, rgba: &[u8]) -> std::io::Result<()> {
     w.write_image_data(rgba).map_err(std::io::Error::other)
 }
 
+/// Why a file couldn't be added, for the status line.
+pub fn why_not(path: &Path) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    // Chowdren turns a Fusion game into native code; its data then lives in Assets.dat.
+    if dir.join("Assets.dat").is_file() {
+        return format!("{name} is a native port of a Fusion game (made with Chowdren): its logic is compiled into the program, so there is no Fusion game data to run.");
+    }
+    format!("{name} isn't a Clickteam Fusion game (no Fusion game data in it).")
+}
+
 /// Fusion game files under `dir` (a few levels deep). Data files that belong to an
 /// `.exe` next to them are skipped in favour of the `.exe`.
 pub fn find_games(dir: &Path) -> Vec<PathBuf> {

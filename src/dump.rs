@@ -160,6 +160,7 @@ pub fn print_info(g: &GameData, verbose: bool) {
                             let speed = match &m.kind {
                                 rekindle::ctf_loader::properties::MovementKind::EightDirections { speed, .. }
                                 | rekindle::ctf_loader::properties::MovementKind::Ball { speed, .. } => format!(" speed {speed}"),
+                                rekindle::ctf_loader::properties::MovementKind::Mouse { x1, x2, y1, y2 } => format!(" area x {x1}..{x2} y {y1}..{y2}"),
                                 _ => String::new(),
                             };
                             format!("{name}{speed}{}{}", if m.player > 0 { format!(" p{}", m.player) } else { String::new() }, if m.moving_at_start { "" } else { " stopped" })

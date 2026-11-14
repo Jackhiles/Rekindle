@@ -719,8 +719,8 @@ impl Viewer {
         self.shown_frame = self.rt.frame_log.len();
         self.scroll = Vec2::ZERO;
         self.layer_off = vec![false; self.rt.frame().layers.len().max(1)];
-        // Keep decoded images for revisits, unless the cache has grown too large.
-
+        let line = format!("frame {} \"{}\"", self.rt.frame_index, self.rt.frame().name);
+        self.log.line(&line);
     }
 
     fn view_size(&self) -> Vec2 {
