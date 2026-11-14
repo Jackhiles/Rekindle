@@ -52,7 +52,7 @@ struct Driver {
 
 impl Driver {
     fn advance_to(&mut self, until: u64) {
-        let mut input = Input::default();
+        let mut input = Input { mouse: self.last_mouse, ..Input::default() };
         while self.tick < until && !self.rt.finished {
             let scroll = self.rt.scroll;
             self.script.apply(self.tick, &mut input, scroll);

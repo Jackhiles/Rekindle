@@ -118,8 +118,12 @@ impl InputScript {
                 _ => None,
             })
             .max_by_key(|m| m.0);
-        if let Some((_, x, y)) = last_move {
-            input.mouse = (x + scroll.0, y + scroll.1);
+        // The frame position is taken when the pointer moves (as the original runtime
+        // does on mouse messages), not recomputed every tick as the scroll changes.
+        if let Some((t, x, y)) = last_move {
+            if t == tick || tick == 0 {
+                input.mouse = (x + scroll.0, y + scroll.1);
+            }
         }
         for e in &self.events {
             match *e {
@@ -171,7 +175,7 @@ mod tests {
         assert!(i.clicked[0] && i.down.contains(&1));
         i.consume_edges();
         s.apply(6, &mut i, (100.0, 0.0));
-        assert_eq!(i.mouse, (110.0, 20.0), "mouse position persists and follows the scroll");
+        assert_eq!(i.mouse, (10.0, 20.0), "the frame position is taken when the pointer moves, not as the scroll changes");
         assert!(!i.clicked[0] && i.pressed.contains(&13));
         assert_eq!(s.last_tick(), 9);
     }

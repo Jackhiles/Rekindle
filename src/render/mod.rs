@@ -636,6 +636,8 @@ impl Xform {
 }
 
 struct Viewer {
+    /// Pointer position in the game view last time the frame position was updated.
+    last_window_mouse: Option<Vec2>,
     rt: Runtime,
     textures: Textures,
     inks: InkMaterials,
@@ -798,8 +800,16 @@ impl Viewer {
             }
         }
         let (origin, size) = self.present();
-        let m = (Vec2::from(mouse_position()) - origin) / (size / self.view_size()) + self.current_scroll();
-        self.input.mouse = (m.x as f64, m.y as f64);
+        // Like the original runtime, the pointer's frame position is updated when the
+        // pointer moves (with the scroll at that moment), not every tick: an object that
+        // follows the mouse and that the camera follows then pans as the mouse moves and
+        // stops when it stops.
+        let win = (Vec2::from(mouse_position()) - origin) / (size / self.view_size());
+        if self.last_window_mouse != Some(win) || self.shown_frame != self.rt.frame_log.len() {
+            let m = win + self.current_scroll();
+            self.input.mouse = (m.x as f64, m.y as f64);
+            self.last_window_mouse = Some(win);
+        }
         self.input.wheel += mouse_wheel().1;
         let (origin, size) = self.present();
         let view = self.view_size();
@@ -1605,6 +1615,7 @@ pub async fn run(game: GameData, opts: ViewerOptions) {
     let rt = Runtime::with_save_root(game, opts.start_frame, opts.save_dir.clone());
     let save_root = rt.files.save_root.clone();
     let mut v = Viewer {
+        last_window_mouse: None,
         shown_frame: rt.frame_log.len(),
         rt,
         textures: Textures::default(),
