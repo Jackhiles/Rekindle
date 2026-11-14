@@ -185,7 +185,7 @@ pub fn print_info(g: &GameData, verbose: bool) {
                         .animations
                         .iter()
                         .enumerate()
-                        .filter_map(|(k, a)| a.as_ref().map(|a| format!("{k}:{}", a.directions.iter().flatten().next().map_or(0, |d| d.frames.len()))))
+                        .filter_map(|(k, a)| a.as_ref().map(|a| { let d = a.directions.iter().flatten().next(); format!("{k}:{}@{}", d.map_or(0, |d| d.frames.len()), d.and_then(|d| d.frames.first()).map_or(-1, |&h| h as i64)) }))
                         .collect();
                     format!("{paras}  anims [{}]", list.join(" "))
                 }

@@ -66,7 +66,7 @@ Extension objects (`.mfx` files) are reimplemented natively in `src/runtime/ext/
   keyboard controls working; gamepads still work through Rekindle's own controller support.
 - **ControlIME** (Japanese text input mode) is accepted and does nothing.
 
-Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified.
+Games write their files through a sandbox. Writes go to `%APPDATA%\Rekindle\<game>\` (override with `--save-dir`), split into `app\` for paths under the game folder and `appdata\` for AppData paths. Reads check the sandbox first and then the real location, so saves from the original game are picked up but never modified. On Windows that includes the VirtualStore (`%LOCALAPPDATA%\VirtualStore`), where old games' saves to protected places such as `C:\` really end up.
 
 To move progress between Rekindle and the original game, open a game's **Settings** in the launcher and use the **Saves** row: *Use original game's saves* replaces Rekindle's copies with the original game's, *Copy to original game* does the reverse (each needs a second click). Whatever gets replaced or removed is first copied to `backups\<time>\` in the game's Rekindle folder. From the command line: `rekindle <GAME> --saves status|import|export`. The save manager knows a game's files from its Rekindle folder and from the original files the game has read (listed in `original-files.txt`).
 

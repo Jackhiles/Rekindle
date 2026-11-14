@@ -17,6 +17,9 @@ pub struct SaveFs {
     pub save_root: PathBuf,
     /// The real roaming AppData folder (Windows), used to map AppData paths.
     pub appdata: Option<PathBuf>,
+    /// Windows' VirtualStore: where old games' writes to protected places (C:\, Program
+    /// Files) really went, so their saves are read from there.
+    pub virtual_store: Option<PathBuf>,
     /// Tests: never read the player's real AppData files (saves made outside the sandbox),
     /// only the sandbox and the game's own folder.
     pub isolated: bool,
@@ -94,11 +97,13 @@ impl SaveFs {
         let app_file = std::path::absolute(app_file).unwrap_or_else(|_| app_file.to_path_buf());
         let app_dir = app_file.parent().map(Path::to_path_buf).unwrap_or_default();
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        let virtual_store = if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("VirtualStore")) } else { None };
         Self {
             app_file,
             app_dir,
             save_root,
             appdata,
+            virtual_store,
             isolated: false,
             noted: Default::default(),
         }
@@ -161,11 +166,22 @@ impl SaveFs {
     /// The real location a game path refers to (for reading original saves).
     fn real(&self, path: &str) -> PathBuf {
         let p = PathBuf::from(path.replace('\\', std::path::MAIN_SEPARATOR_STR));
-        if p.is_absolute() {
-            p
-        } else {
-            self.app_dir.join(p)
+        let p = if p.is_absolute() { p } else { self.app_dir.join(p) };
+        // A save the original game wrote to a protected place lives in the VirtualStore.
+        match self.virtualized(&p) {
+            Some(v) if !p.exists() && v.is_file() => v,
+            _ => p,
         }
+    }
+
+    /// The VirtualStore copy of a path on the system drive (Windows), if there is a store.
+    fn virtualized(&self, p: &Path) -> Option<PathBuf> {
+        let store = self.virtual_store.as_ref()?;
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        let s = p.to_string_lossy();
+        let rest = s.get(..drive.len()).filter(|d| d.eq_ignore_ascii_case(&drive)).map(|_| &s[drive.len()..])?;
+        let rest = rest.trim_start_matches(['\\', '/']);
+        (!rest.is_empty()).then(|| store.join(rest))
     }
 
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
@@ -229,6 +245,13 @@ impl SaveFs {
                 for r in &rest[1..] {
                     p.push(r);
                 }
+                // Files in a drive's root can't be written without admin rights: old games'
+                // copies are in the VirtualStore, and that's where an export goes too.
+                if let Some(v) = self.virtualized(&p) {
+                    if v.is_file() || (!p.exists() && rest.len() == 2) {
+                        return Some(v);
+                    }
+                }
                 return Some(p);
             }
             _ => return None,
@@ -241,7 +264,9 @@ impl SaveFs {
 
     /// May the real location of `path` be read? (Not AppData when isolated.)
     fn real_allowed(&self, path: &str) -> bool {
-        !self.isolated || self.appdata.as_ref().is_none_or(|a| !self.real(path).starts_with(a))
+        let real = self.real(path);
+        !self.isolated
+            || (self.appdata.as_ref().is_none_or(|a| !real.starts_with(a)) && self.virtual_store.as_ref().is_none_or(|v| !real.starts_with(v)))
     }
 
     pub fn write(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
