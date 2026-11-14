@@ -99,6 +99,12 @@ pub fn run_scenario(path: &Path) -> Result<ScenarioResult> {
                 let rt = Runtime::with_save_root(game, start_frame, Some(save_root.clone()));
                 driver = Some(Driver { rt, tick: 0, script: InputScript::default(), last_mouse: (0.0, 0.0), save_root: save_root.clone() });
             }
+            // `saves DIR` (before `game`): start from a copy of a save folder (a Rekindle
+            // save root, e.g. one with `app\` and `appdata\`).
+            "saves" => {
+                let src = dir.join(rest);
+                copy_tree(&src, &save_root).with_context(|| format!("copying saves from {}", src.display()))?;
+            }
             "frame" => {
                 start_frame = rest.parse().context("frame index")?;
                 if let Some(d) = &mut driver {
@@ -356,4 +362,17 @@ pub fn find_scenarios(dir: &Path) -> Vec<PathBuf> {
         .collect();
     v.sort();
     v
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            copy_tree(&p, &to.join(e.file_name()))?;
+        } else {
+            std::fs::copy(&p, to.join(e.file_name()))?;
+        }
+    }
+    Ok(())
 }
